@@ -9,6 +9,7 @@ import numpy as np
 import subprocess
 import time
 import math
+import os
 from pathlib import Path
 
 # ============================================================
@@ -28,7 +29,7 @@ _ADB = _shutil.which("adb") or (
     "/tmp/platform-tools/adb" if Path("/tmp/platform-tools/adb").exists() else "adb"
 )
 ADB = _ADB
-DEVICE = "192.168.31.165:5557"
+DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.165:5557")
 BASE_W, BASE_H = 1280, 720
 
 # 摇杆配置（从测试结果）
