@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# 截图临时文件
+assets/current.png
+assets/after_oneclick.png
+assets/no_oneclick.png
+assets/maturity_*.png
+
+# IDE
+.vscode/
+.idea/
