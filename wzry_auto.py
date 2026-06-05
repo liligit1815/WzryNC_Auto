@@ -23,7 +23,11 @@ GAME_PKG = "com.tencent.tmgp.sgame"
 GAME_ACT = f"{GAME_PKG}/com.tencent.tmgp.sgame.SGameActivity"
 
 # 模拟器配置
-ADB = "/tmp/platform-tools/adb"
+import shutil as _shutil
+_ADB = _shutil.which("adb") or (
+    "/tmp/platform-tools/adb" if Path("/tmp/platform-tools/adb").exists() else "adb"
+)
+ADB = _ADB
 DEVICE = "192.168.31.165:5557"
 BASE_W, BASE_H = 1280, 720
 
