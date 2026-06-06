@@ -357,20 +357,24 @@ def step8_close_harvest():
     """步骤8: 关闭收获弹窗"""
     print("\n[步骤8] 关闭收获弹窗...")
     
-    screenshot(SCREENSHOT_PATH)
-    
-    if has_template("harvest_continue.png", SCREENSHOT_PATH, 0.5):
-        print("  ✅ 找到收获弹窗")
-        print("  ⏳ 等待3秒...")
-        time.sleep(3)
+    for attempt in range(3):
+        screenshot(SCREENSHOT_PATH)
         
-        click_template("harvest_continue.png", SCREENSHOT_PATH, 0.5, "继续")
-        print("  ⏳ 等待5秒...")
-        time.sleep(5)
-        return True
-    else:
-        print("  ⚠️ 未找到收获弹窗")
-        return False
+        if has_template("harvest_continue.png", SCREENSHOT_PATH, 0.8):
+            print("  ✅ 找到收获弹窗")
+            print("  ⏳ 等待3秒...")
+            time.sleep(3)
+            
+            click_template("harvest_continue.png", SCREENSHOT_PATH, 0.8, "继续")
+            print("  ⏳ 等待5秒...")
+            time.sleep(5)
+            return True
+        else:
+            print(f"  ⚠️ 未找到收获弹窗，等待3秒后重试 ({attempt+1}/3)")
+            time.sleep(3)
+    
+    print("  ⚠️ 连续3次未找到收获弹窗，进入步骤9")
+    return False
 
 # ============================================================
 # 步骤9: 移动到土地
