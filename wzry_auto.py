@@ -297,14 +297,18 @@ def set_brightness_zero_root():
     # 关闭自动亮度
     adb_shell("settings put system screen_brightness_mode 0")
     # 使用ROOT权限直接写入亮度节点
-    result = adb_shell("su -c 'echo 0 > /sys/class/backlight/panel0-backlight/brightness'")
-    if "Permission denied" in result or "not found" in result:
-        # 尝试其他亮度节点路径
-        result = adb_shell("su -c 'echo 0 > /sys/class/backlight/lcd-backlight/brightness'")
-    if "Permission denied" in result or "not found" in result:
-        # 再尝试settings方式
-        adb_shell("su -c 'settings put system screen_brightness 0'")
-    print("  ✅ 已使用ROOT权限将亮度设为0")
+    result = adb_shell("su -c \"echo 0 > /sys/class/backlight/panel0-backlight/brightness\"")
+    if result and ("Permission denied" in result or "error" in result.lower()):
+        print(f"  ⚠️ 写入失败: {result}")
+    else:
+        # 等待亮度生效
+        time.sleep(2)
+        # 验证是否写入成功
+        verify = adb_shell("su -c \"cat /sys/class/backlight/panel0-backlight/brightness\"")
+        if verify.strip() == "0":
+            print("  ✅ 已使用ROOT权限将亮度设为0")
+        else:
+            print(f"  ⚠️ 验证失败，当前亮度: {verify.strip()}")
 
 def restore_brightness():
     """恢复原始亮度设置"""
