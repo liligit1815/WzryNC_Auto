@@ -161,6 +161,17 @@ def adb_shell(cmd):
     result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
     return result.stdout
 
+def keep_screen_on():
+    """防止屏幕锁定和熄屏"""
+    print("  🔆 设置屏幕常亮...")
+    # 设置屏幕超时为最大值（约24天）
+    adb_shell("settings put system screen_off_timeout 2147483647")
+    # 禁用锁屏
+    adb_shell("settings put secure lockscreen.disabled 1")
+    # 保持唤醒状态
+    adb_shell("svc power stayon true")
+    print("  ✅ 屏幕常亮已启用")
+
 def screenshot(path=SCREENSHOT_PATH):
     """截图"""
     adb_shell("screencap -p /sdcard/screen.png")
@@ -816,6 +827,9 @@ def main():
     # 启动前检查ADB连接
     if not check_adb_connection():
         return
+    
+    # 防止屏幕锁定
+    keep_screen_on()
     
     # 检测设备分辨率
     dev_w, dev_h = detect_resolution()
