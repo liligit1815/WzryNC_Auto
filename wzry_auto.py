@@ -226,18 +226,18 @@ def wake_and_unlock(password=""):
         return True
     
     print("  🔆 唤醒屏幕...")
-    # 唤醒屏幕
-    adb_shell("input keyevent KEYCODE_WAKEUP")
-    time.sleep(1)
     
-    # 如果之前设置了低亮度，重新应用（防止设备唤醒重置）
+    # 如果之前设置了低亮度，先应用再唤醒（防止闪亮）
     if _original_brightness is not None:
-        adb_shell("settings put system screen_brightness_mode 0")
-        # 检查是否使用ROOT设置过亮度0
         if _brightness_mode == 'root':
             set_brightness_zero_root()
         else:
+            adb_shell("settings put system screen_brightness_mode 0")
             adb_shell("settings put system screen_brightness 1")
+    
+    # 唤醒屏幕
+    adb_shell("input keyevent KEYCODE_WAKEUP")
+    time.sleep(1)
     
     # 上滑显示密码输入框
     adb_shell("input swipe 540 1800 540 500 300")
