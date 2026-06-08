@@ -152,9 +152,28 @@ def adb_shell(cmd):
 def screenshot(path=SCREENSHOT_PATH):
     """截图"""
     adb_shell("screencap -p /sdcard/screen.png")
-    subprocess.run(f"{ADB} -s {DEVICE} pull /sdcard/screen.png {path}", 
+    subprocess.run(f"{ADB} -s {DEVICE} pull /sdcard/screen.png {path}",
                    shell=True, capture_output=True, timeout=10)
+    # 自动旋转：竖屏截图 → 横屏
+    img = cv2.imread(path)
+    if img is not None:
+        h, w = img.shape[:2]
+        if h > w:
+            img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            cv2.imwrite(path, img)
     return path
+
+def detect_resolution():
+    """检测设备横屏分辨率"""
+    import re
+    out = adb_shell("wm size")
+    match = re.search(r'(\d+)x(\d+)', out)
+    if match:
+        w, h = int(match.group(1)), int(match.group(2))
+        if h > w:
+            w, h = h, w
+        return w, h
+    return 1280, 720
 
 def tap(x, y, label=""):
     """点击屏幕"""
@@ -170,53 +189,66 @@ def swipe(x1, y1, x2, y2, duration_ms=1000):
 # 模板匹配
 # ============================================================
 def find_template(template_name, screenshot_path, threshold=0.6):
-    """在截图中查找模板"""
-    template_path = TEMPLATE_DIR / template_name
-    if not template_path.exists():
-        print(f"  ⚠️ 模板不存在: {template_path}")
-        return None
-    
+    """在截图中查找模板（支持多分辨率）"""
     img = cv2.imread(screenshot_path)
-    tmpl = cv2.imread(str(template_path))
-    if img is None or tmpl is None:
+    if img is None:
         return None
     
-    # 多尺度匹配
     img_h, img_w = img.shape[:2]
-    tmpl_h, tmpl_w = tmpl.shape[:2]
     
-    scales = [1.0]
-    if tmpl_w > 200:
-        scales.append(img_w / tmpl_w)
-    else:
-        for s in [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]:
-            if abs(s - 1.0) > 0.05:
-                scales.append(s)
+    # 构建模板搜索路径：分辨率专用 > 默认
+    template_dirs = []
+    res_dir = TEMPLATE_DIR / f"{img_w}x{img_h}"
+    if res_dir.exists():
+        template_dirs.append(res_dir)
+    template_dirs.append(TEMPLATE_DIR)
     
     best_score = -1
     best_loc = None
-    best_tw, best_th = tmpl_w, tmpl_h
+    best_tw, best_th = 0, 0
     
-    for s in scales:
-        if abs(s - 1.0) < 0.01:
-            t = tmpl
-            tw, th = tmpl_w, tmpl_h
-        else:
-            nw, nh = int(tmpl_w * s), int(tmpl_h * s)
-            if nw > img_w or nh > img_h or nw < 5 or nh < 5:
-                continue
-            t = cv2.resize(tmpl, (nw, nh))
-            tw, th = nw, nh
+    for tdir in template_dirs:
+        template_path = tdir / template_name
+        if not template_path.exists():
+            continue
         
-        result = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        tmpl = cv2.imread(str(template_path))
+        if tmpl is None:
+            continue
         
-        if max_val > best_score:
-            best_score = max_val
-            best_loc = max_loc
-            best_tw, best_th = tw, th
+        tmpl_h, tmpl_w = tmpl.shape[:2]
+        tdir_label = "专用" if tdir != TEMPLATE_DIR else "默认"
+        
+        # 直接匹配
+        if tmpl_w <= img_w and tmpl_h <= img_h:
+            result = cv2.matchTemplate(img, tmpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            if max_val > best_score:
+                best_score = max_val
+                best_loc = max_loc
+                best_tw, best_th = tmpl_w, tmpl_h
+        
+        # 如果模板比截图小很多，多尺度匹配
+        if tmpl_w < img_w * 0.5 or tmpl_h < img_h * 0.5:
+            scale_factor = img_w / tmpl_w
+            for s in [scale_factor * 0.8, scale_factor * 0.9, scale_factor,
+                      scale_factor * 1.1, scale_factor * 1.2]:
+                nw, nh = int(tmpl_w * s), int(tmpl_h * s)
+                if nw > img_w or nh > img_h or nw < 5 or nh < 5:
+                    continue
+                t = cv2.resize(tmpl, (nw, nh))
+                result = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                if max_val > best_score:
+                    best_score = max_val
+                    best_loc = max_loc
+                    best_tw, best_th = nw, nh
     
-    if best_score >= threshold and best_loc is not None:
+    if not best_loc:
+        print(f"  ❌ '{template_name}': 模板不存在")
+        return None
+    
+    if best_score >= threshold:
         cx = best_loc[0] + best_tw // 2
         cy = best_loc[1] + best_th // 2
         print(f"  ✅ '{template_name}': score={best_score:.3f} @ ({cx},{cy})")
