@@ -34,6 +34,7 @@ _ADB = _shutil.which("adb") or (
 )
 ADB = _ADB
 DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.197:38983")
+UNLOCK_PWD = os.environ.get("WZRY_UNLOCK_PWD", "")  # 锁屏密码，为空则不输入密码
 BASE_W, BASE_H = 1280, 720
 
 # 摇杆配置（从测试结果）
@@ -171,6 +172,37 @@ def keep_screen_on():
     # 保持唤醒状态
     adb_shell("svc power stayon true")
     print("  ✅ 屏幕常亮已启用")
+
+def wake_and_unlock(password=""):
+    """唤醒屏幕并解锁"""
+    # 检测屏幕是否亮着
+    out = adb_shell("dumpsys power | grep mHoldingDisplaySuspendBlocker")
+    if "mHoldingDisplaySuspendBlocker=true" in out:
+        print("  📱 屏幕已亮，无需唤醒")
+        return True
+    
+    print("  🔆 唤醒屏幕...")
+    # 唤醒屏幕
+    adb_shell("input keyevent KEYCODE_WAKEUP")
+    time.sleep(1)
+    
+    # 上滑显示密码输入框
+    adb_shell("input swipe 540 1800 540 500 300")
+    time.sleep(1)
+    
+    # 输入密码
+    if password:
+        print("  🔑 输入密码...")
+        adb_shell(f"input text {password}")
+        time.sleep(0.5)
+        adb_shell("input keyevent 66")  # 回车确认
+        time.sleep(2)
+    
+    # 确保游戏在前台
+    adb_shell(f"monkey -p {GAME_PKG} -c android.intent.category.LAUNCHER 1")
+    time.sleep(3)
+    print("  ✅ 屏幕已唤醒并解锁")
+    return True
 
 def screenshot(path=SCREENSHOT_PATH):
     """截图"""
@@ -726,11 +758,12 @@ def step9_move_to_farmland(first_water_time):
 # 步骤10: 计算等待时间
 # ============================================================
 def step10_calculate_wait(maturity_time, result, maturity_dt):
-    """步骤10: 根据成熟时间和浇水时间计算等待时间并退出游戏
+    """步骤10: 根据成熟时间和浇水时间计算等待时间
     
     :param maturity_time: OCR识别的 (hour, minute) 元组
     :param result: 浇水计算结果 dict
     :param maturity_dt: 成熟时间 (datetime)
+    :return: wake_time (下次唤醒时间)
     """
     print("\n[步骤10] 计算等待时间...")
     
@@ -739,7 +772,7 @@ def step10_calculate_wait(maturity_time, result, maturity_dt):
         print("  🌾 作物已成熟，退出游戏重新进入收割...")
         adb_shell(f"am force-stop {GAME_PKG}")
         time.sleep(3)
-        return True
+        return None
     
     # 先杀掉游戏
     print("  🛑 退出王者荣耀...")
@@ -768,27 +801,26 @@ def step10_calculate_wait(maturity_time, result, maturity_dt):
         reason = "成熟"
         print(f"  🌾 成熟时间: {maturity_dt.strftime('%H:%M:%S')}")
     else:
-        print("  ⚠️ 无法识别时间，等待5分钟后重试...")
-        time.sleep(300)
-        return True
+        print("  ⚠️ 无法识别时间，5分钟后重试...")
+        return now + timedelta(minutes=5)
     
-    # 提前1分钟
-    wake_time -= timedelta(minutes=1)
+    # 提前2分钟唤醒
+    wake_time -= timedelta(minutes=2)
     
     if wake_time <= now:
         print(f"  ⚠️ {reason}时间已到，立即重新启动")
-        return True
+        return now
     
     wait_seconds = int((wake_time - now).total_seconds())
     hours = wait_seconds // 3600
     minutes = (wait_seconds % 3600) // 60
     seconds = wait_seconds % 60
     
-    print(f"  🎯 唤醒时间: {wake_time.strftime('%H:%M:%S')} ({reason}前1分钟)")
+    print(f"  🎯 目标时间: {(wake_time + timedelta(minutes=2)).strftime('%H:%M:%S')} ({reason})")
+    print(f"  🔔 提前2分钟唤醒: {wake_time.strftime('%H:%M:%S')}")
     print(f"  ⏳ 等待 {hours}小时{minutes}分{seconds:02d}秒")
     
-    time.sleep(wait_seconds)
-    return True
+    return wake_time
 # ============================================================
 # 主流程
 # ============================================================
@@ -895,8 +927,22 @@ def main():
         # 步骤9: 移动到土地，读取成熟时间，计算浇水计划
         maturity_time, result, maturity_dt = step9_move_to_farmland(first_water_time)
         
-        # 步骤10: 根据成熟时间和浇水时间计算等待时间
-        step10_calculate_wait(maturity_time, result, maturity_dt)
+        # 步骤10: 计算等待时间，返回唤醒时间
+        wake_time = step10_calculate_wait(maturity_time, result, maturity_dt)
+        
+        if wake_time is None:
+            # 作物已成熟，立即重新开始
+            continue
+        
+        # 等待到唤醒时间
+        now = datetime.now()
+        if wake_time > now:
+            wait_seconds = int((wake_time - now).total_seconds())
+            print(f"\n⏳ 等待到 {wake_time.strftime('%H:%M:%S')} 唤醒...")
+            time.sleep(wait_seconds)
+        
+        # 唤醒屏幕并解锁
+        wake_and_unlock(UNLOCK_PWD)
 
 if __name__ == "__main__":
     main()
