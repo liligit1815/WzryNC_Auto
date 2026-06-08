@@ -187,9 +187,6 @@ def wake_and_unlock(password=""):
         adb_shell("input keyevent 66")  # 回车确认
         time.sleep(2)
     
-    # 确保游戏在前台
-    adb_shell(f"monkey -p {GAME_PKG} -c android.intent.category.LAUNCHER 1")
-    time.sleep(3)
     print("  ✅ 屏幕已唤醒并解锁")
     return True
 
