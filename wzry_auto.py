@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-王者荣耀农场自动化务农 v2
+王者荣耀农场自动化务农 v3
 完全基于模板匹配 + 摇杆操作
-新增：浇水时间计算、统计功能
+新增：浇水时间计算、统计功能、多分辨率支持、唤醒解锁、亮度控制
 """
 
 import cv2
@@ -301,8 +301,6 @@ def set_brightness_zero_root():
     if result and ("Permission denied" in result or "error" in result.lower()):
         print(f"  ⚠️ 写入失败: {result}")
     else:
-        # 等待亮度生效
-        time.sleep(2)
         # 验证是否写入成功
         verify = adb_shell("su -c \"cat /sys/class/backlight/panel0-backlight/brightness\"")
         if verify.strip() == "0":
@@ -1011,7 +1009,7 @@ def main():
     """主流程"""
     global JOYSTICK_CENTER, _step6_cfg
     print("=" * 60)
-    print("王者荣耀农场自动化务农 v2")
+    print("王者荣耀农场自动化务农 v3")
     print("=" * 60)
     # 显示支持的分辨率及参数
     for (w, h), cfg in STEP6_CONFIG.items():
