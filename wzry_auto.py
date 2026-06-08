@@ -296,7 +296,24 @@ def step1_check_status():
     """步骤1: 检测APP是否在前台"""
     print("\n[步骤1] 检测状态...")
     
-    out = adb_shell("dumpsys activity activities | grep -E 'ResumedActivity|topResumedActivity'")
+    out = ""
+    for attempt in range(3):
+        # 方法1: ResumedActivity
+        out = adb_shell("dumpsys activity activities | grep -E 'ResumedActivity|topResumedActivity'")
+        if GAME_PKG in out:
+            break
+        # 方法2: window focus
+        out2 = adb_shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+        if GAME_PKG in out2:
+            out = out2
+            break
+        # 方法3: top activity
+        out3 = adb_shell("dumpsys activity top | grep ACTIVITY")
+        if GAME_PKG in out3:
+            out = out3
+            break
+        print(f"  ⚠️ 检测失败，重试 {attempt+1}/3...")
+        time.sleep(2)
     
     if GAME_PKG in out:
         print("  🎮 王者荣耀在前台，退出...")
@@ -305,7 +322,7 @@ def step1_check_status():
         time.sleep(5)
         return True
     else:
-        print("  ✅ 王者荣耀不在前台")
+        print(f"  ✅ 王者荣耀不在前台")
         return False
 
 # ============================================================
