@@ -46,8 +46,18 @@ JOYSTICK_RADIUS = 200
 class Stats:
     def __init__(self):
         self.rounds = 0          # 执行轮数
-        self.harvests = 0        # 成熟收获次数（步骤8找到收获弹窗）
+        self.harvests = 0        # 成熟收获次数
+        self.total_exp = 0       # 累计获得经验
+        self.total_crops = {}    # 累计收获作物 {作物名: 数量}
         self.start_time = datetime.now()
+    
+    def add_harvest(self, exp=0, crop_name="", count=0):
+        """记录一次收获"""
+        self.harvests += 1
+        if exp > 0:
+            self.total_exp += exp
+        if crop_name and count > 0:
+            self.total_crops[crop_name] = self.total_crops.get(crop_name, 0) + count
     
     def summary(self):
         elapsed = datetime.now() - self.start_time
@@ -57,6 +67,11 @@ class Stats:
         print("=" * 60)
         print(f"  执行轮数: {self.rounds}")
         print(f"  成熟收获: {self.harvests} 次")
+        if self.total_exp > 0:
+            print(f"  累计经验: +{self.total_exp}")
+        if self.total_crops:
+            for name, qty in self.total_crops.items():
+                print(f"  {name}: {qty} 个")
         print(f"  运行时长: {hours:.1f} 小时")
         print(f"  开始时间: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"  结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -289,6 +304,66 @@ def read_maturity_time(screenshot_path):
 
     return None
 
+def read_harvest_info(screenshot_path):
+    """从收获弹窗截图中OCR识别收获信息
+    返回: {"exp": int, "crop": str, "count": int} 或 None
+    """
+    import re
+    
+    img = cv2.imread(screenshot_path)
+    if img is None:
+        return None
+    
+    h, w = img.shape[:2]
+    # 收获弹窗通常在屏幕中央区域
+    roi = img[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
+    
+    try:
+        ocr = get_ocr()
+        result, _ = ocr(roi)
+    except Exception as e:
+        print(f"  ⚠️ OCR失败: {e}")
+        return None
+    
+    if not result:
+        return None
+    
+    all_text = " ".join([line[1] for line in result])
+    print(f"  📝 OCR文本: {all_text}")
+    
+    harvest = {"exp": 0, "crop": "", "count": 0}
+    
+    # 识别经验: "+20经验" "经验+20" "EXP+20" 等
+    exp_match = re.search(r'[+＋](\d+)\s*[经経]验', all_text)
+    if not exp_match:
+        exp_match = re.search(r'[经経]验\s*[+＋](\d+)', all_text)
+    if exp_match:
+        harvest["exp"] = int(exp_match.group(1))
+    
+    # 识别作物名和数量: "番茄 x5" "洋葱×3" "小麦*10" 等
+    crop_names = ["番茄", "洋葱", "小麦", "土豆", "胡萝卜", "白菜", "玉米", 
+                  "南瓜", "草莓", "西瓜", "辣椒", "茄子", "黄瓜", "大豆"]
+    for name in crop_names:
+        if name in all_text:
+            harvest["crop"] = name
+            # 找数量
+            count_match = re.search(rf'{name}\s*[x×*＊]\s*(\d+)', all_text)
+            if not count_match:
+                count_match = re.search(rf'(\d+)\s*个', all_text)
+            if count_match:
+                harvest["count"] = int(count_match.group(1))
+            break
+    
+    # 如果没匹配到预设作物名，尝试通用数量匹配
+    if not harvest["crop"]:
+        count_match = re.search(r'(\d+)\s*个', all_text)
+        if count_match:
+            harvest["count"] = int(count_match.group(1))
+    
+    if harvest["exp"] > 0 or harvest["count"] > 0:
+        return harvest
+    return None
+
 # ============================================================
 # 步骤1: 检测状态
 # ============================================================
@@ -485,6 +560,23 @@ def step8_close_harvest():
         
         if has_template("harvest_continue.png", SCREENSHOT_PATH, 0.8):
             print("  ✅ 找到收获弹窗")
+            
+            # OCR识别收获信息
+            harvest_info = read_harvest_info(SCREENSHOT_PATH)
+            if harvest_info:
+                exp = harvest_info["exp"]
+                crop = harvest_info["crop"]
+                count = harvest_info["count"]
+                detail = []
+                if exp > 0:
+                    detail.append(f"经验+{exp}")
+                if crop:
+                    detail.append(f"{crop}×{count}" if count else crop)
+                print(f"  🎉 收获: {' '.join(detail)}")
+                stats.add_harvest(exp=exp, crop_name=crop, count=count)
+            else:
+                stats.add_harvest()
+            
             print("  ⏳ 等待3秒...")
             time.sleep(3)
             
@@ -667,9 +759,7 @@ def main():
             step7_oneclick_farm()
         
         # 步骤8: 关闭收获弹窗
-        if step8_close_harvest():
-            stats.harvests += 1
-            print(f"  📊 累计收获: {stats.harvests} 次")
+        step8_close_harvest()
         
         # 步骤9: 移动到土地，读取成熟时间，计算浇水计划
         maturity_time, result, maturity_dt = step9_move_to_farmland()
