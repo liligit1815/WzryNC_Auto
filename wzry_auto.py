@@ -291,6 +291,15 @@ def set_brightness_low():
     adb_shell("settings put system screen_brightness 1")
     print("  ✅ 已关闭自动亮度，亮度设为最低")
 
+def _reapply_low_brightness():
+    """重新应用低亮度（杀游戏后调用，防止系统恢复亮度）"""
+    if _original_brightness is None:
+        return
+    if _brightness_mode == 'root':
+        adb_shell("su -c \"echo 0 > /sys/class/backlight/panel0-backlight/brightness\"")
+    else:
+        adb_shell("settings put system screen_brightness 1")
+
 def set_brightness_zero_root():
     """使用ROOT权限将亮度设为0"""
     print("  🔅 使用ROOT权限设置亮度为0...")
@@ -930,12 +939,14 @@ def step10_calculate_wait(maturity_time, result, maturity_dt):
     if maturity_time is None and result is None and maturity_dt is None:
         print("  🌾 作物已成熟，退出游戏重新进入收割...")
         adb_shell(f"am force-stop {GAME_PKG}")
+        _reapply_low_brightness()
         time.sleep(3)
         return None
     
     # 先杀掉游戏
     print("  🛑 退出王者荣耀...")
     adb_shell(f"am force-stop {GAME_PKG}")
+    _reapply_low_brightness()
     
     now = datetime.now()
     
