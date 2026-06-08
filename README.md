@@ -1,24 +1,33 @@
-# 王者荣耀农场自动化工具
+# 王者荣耀农场自动化工具 V3
 
-自动化完成王者荣耀农场务农：启动游戏 → 进入农场 → 一键务农 → 等待作物成熟。
+自动化完成王者荣耀农场务农：启动游戏 → 进入农场 → 一键务农 → 等待作物成熟 → 自动唤醒继续。
+
+## ✨ V3 新功能
+
+- **多分辨率支持**：自动识别设备分辨率，使用对应模板
+- **智能唤醒**：执行时间前2分钟自动唤醒屏幕并解锁
+- **亮度控制**：支持ROOT权限设置亮度为0，减少烧屏风险
+- **作物周期持久化**：自动记录作物周期，避免计算错误
 
 ## 📁 文件结构
 
 ```
 WZRY_Farm/
-├── wzry_auto.py           # 主自动化脚本 (V2.1)
+├── wzry_auto.py           # 主自动化脚本 (V3)
 ├── start.sh               # 一键启动脚本 (Linux)
 ├── monitor.sh             # 监控脚本
 ├── realtime_monitor.sh    # 实时监控脚本
 ├── README.md              # 说明文档
 ├── assets/
-│   └── templates/         # 图片模板 (1280x720)
-│       ├── start_game.png
-│       ├── close_popup.png
-│       ├── lainongchang.png
-│       ├── oneclick_farm.png
-│       ├── refresh_pos.png
-│       └── harvest_continue.png
+│   ├── templates/         # 默认模板 (1280x720)
+│   │   ├── start_game.png
+│   │   ├── close_popup.png
+│   │   ├── lainongchang.png
+│   │   ├── oneclick_farm.png
+│   │   ├── refresh_pos.png
+│   │   └── harvest_continue.png
+│   ├── templates/2400x1080/  # 1080x2400设备专用模板
+│   └── crop_cycle.json    # 作物周期记录
 ├── logs/                  # 日志目录
 └── tmp/                   # 临时文件
 ```
@@ -49,20 +58,19 @@ python --version
 adb version
 ```
 
-### 3. 连接模拟器
+### 3. 连接设备
 
-确保模拟器开启了**无线调试**，获取 IP 和端口后连接：
+确保设备开启了**无线调试**，获取 IP 和端口后连接：
 ```cmd
-adb connect 192.168.31.165:5557
+adb connect 192.168.31.197:38983
 adb devices
 ```
-看到 `192.168.31.165:5557   device` 表示连接成功。
 
 ### 4. 克隆仓库并安装依赖
 
 ```cmd
-git clone https://github.com/your-username/WZRY_Farm.git
-cd WZRY_Farm
+git clone https://github.com/liligit1815/WzryNC_Auto.git
+cd WzryNC_Auto
 
 # 创建虚拟环境
 python -m venv venv
@@ -85,20 +93,15 @@ venv\Scripts\activate
 python -u wzry_auto.py
 ```
 
-### 6. 修改设备地址
+### 6. 环境变量配置
 
-脚本默认连接 `192.168.31.165:5557`。如需修改：
-
-**方法一：直接改脚本**
-打开 `wzry_auto.py`，找到：
-```python
-DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.165:5557")
-```
-改为你的模拟器地址。
-
-**方法二：用环境变量**
 ```cmd
-set WZRY_DEVICE=192.168.31.100:5555
+# 设备地址
+set WZRY_DEVICE=192.168.31.197:38983
+
+# 锁屏密码（可选）
+set WZRY_UNLOCK_PWD=1234
+
 python -u wzry_auto.py
 ```
 
@@ -108,7 +111,7 @@ python -u wzry_auto.py
 
 ### 1. 连接设备
 ```bash
-adb connect 192.168.31.165:5557
+adb connect 192.168.31.197:38983
 ```
 
 ### 2. 一键启动
@@ -127,6 +130,29 @@ cd WZRY_Farm
 ```bash
 .venv/bin/python3 -u wzry_auto.py > /tmp/wzry_run.log 2>&1 &
 ```
+
+---
+
+## 💡 启动选项
+
+脚本启动时会提示：
+
+```
+============================================================
+💡 是否降低屏幕亮度以减少烧屏风险？
+============================================================
+  Y - 关闭自动亮度，亮度降至最低(1)
+  R - 使用ROOT权限，亮度设为0（突破厂商限制）
+  N - 保持当前亮度设置
+============================================================
+请选择 (Y/R/N):
+```
+
+- **Y**：普通模式，亮度降至1
+- **R**：ROOT模式，亮度设为0（需要设备已ROOT）
+- **N**：不修改亮度
+
+脚本退出时会自动恢复原始亮度设置。
 
 ---
 
@@ -153,11 +179,6 @@ pgrep -f wzry_auto.py
 pkill -f wzry_auto.py
 ```
 
-### 查看游戏状态
-```bash
-adb -s 192.168.31.165:5557 shell pidof com.tencent.tmgp.sgame
-```
-
 ---
 
 ## 📝 工作流程
@@ -171,19 +192,19 @@ adb -s 192.168.31.165:5557 shell pidof com.tencent.tmgp.sgame
 | 5 | 进入农场 | 点击"来农场干农活"按钮 |
 | 6 | 移动到雕像 | 刷新站位 + 摇杆移动到雕像位置 |
 | 7 | 一键务农 | 点击一键务农按钮 |
-| 8 | 关闭收获弹窗 | 处理收获后的弹窗 |
+| 8 | 关闭收获弹窗 | 处理收获后的弹窗，记录作物周期 |
 | 9 | 移动到土地 | 摇杆移动到农田，OCR读取成熟时间 |
-| 10 | 等待成熟 | 计算浇水时间，智能休眠 |
+| 10 | 计算等待 | 计算下次执行时间，退出游戏等待唤醒 |
 
 ---
 
 ## ⚠️ 注意事项
 
-1. **模板分辨率**：模板在 1280x720 设备上截取，不同分辨率设备可能需要重新截取
+1. **多分辨率支持**：脚本自动识别设备分辨率，优先使用专用模板
 2. **ADB 连接不稳定**：脚本启动时会自动重连，3次重试机制
 3. **截图自动旋转**：竖屏截图会自动旋转为横屏
 4. **脚本运行必须加 `-u` 参数**：否则后台模式无输出
-5. **模板匹配阈值**：`oneclick_farm` ≥ 0.65，其他 ≥ 0.5
+5. **模板匹配阈值**：`start_game` ≥ 0.7，`close_popup` ≥ 0.9，其他 ≥ 0.5
 
 ---
 
@@ -195,14 +216,14 @@ A: 确保使用 `-u` 参数：
 python -u wzry_auto.py
 ```
 
-### Q: 步骤1检测不到游戏在前台
-A: 脚本使用三种方式检测（ResumedActivity / mCurrentFocus / top activity），请确认模拟器上游戏确实在前台。
-
 ### Q: 步骤3匹配失败（score < 0.7）
-A: 检查模拟器画面是否显示了"开始游戏"按钮。可能原因：
+A: 检查设备画面是否显示了"开始游戏"按钮。可能原因：
 - 游戏还在加载中（增加等待时间）
-- 模拟器分辨率与模板不匹配
+- 模板与设备分辨率不匹配
 - 游戏卡在更新/公告页面
+
+### Q: 作物周期计算错误
+A: 脚本会在首次种植时自动记录周期。如果计算错误，删除 `assets/crop_cycle.json` 后重新运行。
 
 ### Q: onnxruntime DLL 错误
 A: 安装 Visual C++ Redistributable 并降级 onnxruntime：
@@ -210,8 +231,8 @@ A: 安装 Visual C++ Redistributable 并降级 onnxruntime：
 pip install onnxruntime==1.17.0
 ```
 
-### Q: 健康提醒弹窗
-A: 游戏防沉迷系统限制，需手动点击"确定"。
+### Q: ROOT模式亮度未生效
+A: 检查设备是否已ROOT，并确认 `/sys/class/backlight/` 路径存在。
 
 ---
 
