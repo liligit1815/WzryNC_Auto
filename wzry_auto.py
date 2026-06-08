@@ -102,6 +102,52 @@ signal.signal(signal.SIGTERM, signal_handler)
 # ============================================================
 # 浇水时间计算
 # ============================================================
+import json
+
+# 作物周期映射表（根据实际游戏调整）
+CROP_CYCLES = {
+    "番茄": 5,      # 5分钟
+    "白菜": 60,     # 1小时
+    "胡萝卜": 480,  # 8小时
+    "土豆": 960,    # 16小时
+    "南瓜": 1920,   # 32小时
+}
+
+# 存储文件路径
+CYCLE_FILE = str(ASSETS_DIR / "crop_cycle.json")
+
+def save_crop_cycle(crop_name, cycle_min):
+    """保存作物周期到文件"""
+    data = {
+        "crop_name": crop_name,
+        "cycle_min": cycle_min,
+        "update_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(CYCLE_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"  💾 已保存作物周期: {crop_name} = {cycle_min}分钟")
+
+def load_crop_cycle():
+    """从文件加载作物周期，返回 (crop_name, cycle_min) 或 (None, None)"""
+    if not os.path.exists(CYCLE_FILE):
+        return None, None
+    try:
+        with open(CYCLE_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        crop_name = data.get("crop_name")
+        cycle_min = data.get("cycle_min")
+        update_time = data.get("update_time", "未知")
+        print(f"  📂 读取存储周期: {crop_name} = {cycle_min}分钟 (更新于 {update_time})")
+        return crop_name, cycle_min
+    except:
+        return None, None
+
+def clear_crop_cycle():
+    """清除存储的作物周期（新种植时调用）"""
+    if os.path.exists(CYCLE_FILE):
+        os.remove(CYCLE_FILE)
+        print("  🗑️ 已清除旧作物周期记录")
+
 def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time):
     """
     根据第一次浇水时间 + 第一次浇水后显示的成熟时间
@@ -117,18 +163,27 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time):
     remain_min = delta_sec / 60
     print(f"  💧 第一次浇水后显示剩余时间：{remain_min:.2f} 分钟")
     
-    # 匹配作物原始周期（游戏固定5种作物）
-    plant_rules = [
-        {"cycle": 5, "remain": 5},       # 5分钟
-        {"cycle": 60, "remain": 55},     # 1小时
-        {"cycle": 480, "remain": 400},   # 8小时
-        {"cycle": 960, "remain": 800},   # 16小时
-        {"cycle": 1920, "remain": 1600}, # 32小时
-    ]
+    # 优先使用存储的作物周期
+    stored_crop, stored_cycle = load_crop_cycle()
     
-    # 找最接近的作物周期
-    best_match = min(plant_rules, key=lambda x: abs(x["remain"] - remain_min))
-    cycle_min = best_match["cycle"]
+    if stored_cycle is not None:
+        cycle_min = stored_cycle
+        print(f"  ✅ 使用存储的作物周期：{stored_crop} = {cycle_min}分钟")
+    else:
+        # 匹配作物原始周期（游戏固定5种作物）
+        plant_rules = [
+            {"cycle": 5, "remain": 5},       # 5分钟
+            {"cycle": 60, "remain": 55},     # 1小时
+            {"cycle": 480, "remain": 400},   # 8小时
+            {"cycle": 960, "remain": 800},   # 16小时
+            {"cycle": 1920, "remain": 1600}, # 32小时
+        ]
+        
+        # 找最接近的作物周期
+        best_match = min(plant_rules, key=lambda x: abs(x["remain"] - remain_min))
+        cycle_min = best_match["cycle"]
+        print(f"  ⚠️ 无存储周期，自动匹配为：{cycle_min}分钟")
+    
     cycle_hour = cycle_min // 60
     
     # 计算完美浇水时间点（从第一次浇水开始算）
@@ -798,6 +853,12 @@ def step8_close_harvest():
                     detail.append(f"{cname}×{ccount}")
                 print(f"  🎉 收获: {' '.join(detail)}")
                 stats.add_harvest(exp=exp, crops=crops)
+                
+                # 保存收获的作物周期（用于下次浇水计算）
+                for cname in crops.keys():
+                    if cname in CROP_CYCLES:
+                        save_crop_cycle(cname, CROP_CYCLES[cname])
+                        break
             else:
                 stats.add_harvest()
             
