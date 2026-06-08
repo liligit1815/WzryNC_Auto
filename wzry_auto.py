@@ -193,6 +193,81 @@ def wake_and_unlock(password=""):
     print("  ✅ 屏幕已唤醒并解锁")
     return True
 
+# ============================================================
+# 屏幕亮度控制
+# ============================================================
+_original_brightness = None
+_original_auto_brightness = None
+
+def get_brightness_settings():
+    """获取当前亮度设置"""
+    global _original_brightness, _original_auto_brightness
+    
+    # 获取当前亮度值 (0-255)
+    out = adb_shell("settings get system screen_brightness")
+    try:
+        _original_brightness = int(out.strip())
+    except:
+        _original_brightness = 128
+    
+    # 获取自动亮度设置 (0=关闭, 1=开启)
+    out = adb_shell("settings get system screen_brightness_mode")
+    try:
+        _original_auto_brightness = int(out.strip())
+    except:
+        _original_auto_brightness = 1
+    
+    print(f"  📊 当前亮度: {_original_brightness}/255, 自动亮度: {'开启' if _original_auto_brightness else '关闭'}")
+    return _original_brightness, _original_auto_brightness
+
+def set_brightness_low():
+    """关闭自动亮度，将亮度降到最低"""
+    print("  🔅 设置最低亮度...")
+    # 关闭自动亮度
+    adb_shell("settings put system screen_brightness_mode 0")
+    # 设置亮度为最低 (1-255, 1为最低)
+    adb_shell("settings put system screen_brightness 1")
+    print("  ✅ 已关闭自动亮度，亮度设为最低")
+
+def restore_brightness():
+    """恢复原始亮度设置"""
+    global _original_brightness, _original_auto_brightness
+    
+    if _original_brightness is None:
+        return
+    
+    print("  🔆 恢复亮度设置...")
+    # 恢复亮度值
+    adb_shell(f"settings put system screen_brightness {_original_brightness}")
+    # 恢复自动亮度设置
+    adb_shell(f"settings put system screen_brightness_mode {_original_auto_brightness}")
+    print(f"  ✅ 已恢复亮度: {_original_brightness}/255, 自动亮度: {'开启' if _original_auto_brightness else '关闭'}")
+    
+    # 清空全局变量
+    _original_brightness = None
+    _original_auto_brightness = None
+
+def prompt_brightness_control():
+    """询问用户是否降低亮度"""
+    print("\n" + "=" * 60)
+    print("💡 是否降低屏幕亮度以减少烧屏风险？")
+    print("=" * 60)
+    print("  Y - 关闭自动亮度，亮度降至最低")
+    print("  N - 保持当前亮度设置")
+    print("=" * 60)
+    
+    while True:
+        choice = input("请选择 (Y/N): ").strip().upper()
+        if choice in ['Y', 'YES']:
+            get_brightness_settings()
+            set_brightness_low()
+            return True
+        elif choice in ['N', 'NO']:
+            print("  ℹ️ 保持当前亮度设置")
+            return False
+        else:
+            print("  ⚠️ 请输入 Y 或 N")
+
 def screenshot(path=SCREENSHOT_PATH):
     """截图"""
     adb_shell("screencap -p /sdcard/screen.png")
@@ -849,6 +924,9 @@ def main():
     if not check_adb_connection():
         return
     
+    # 询问是否降低亮度
+    brightness_low = prompt_brightness_control()
+    
     # 检测设备分辨率
     dev_w, dev_h = detect_resolution()
     print(f"  📐 分辨率 {dev_w}x{dev_h}")
@@ -930,5 +1008,18 @@ def main():
         # 唤醒屏幕并解锁
         wake_and_unlock(UNLOCK_PWD)
 
+def run_main():
+    """运行主流程，确保退出时恢复亮度"""
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n⚠️ 用户中断 (Ctrl+C)")
+    except Exception as e:
+        print(f"\n\n❌ 发生错误: {e}")
+    finally:
+        # 恢复亮度设置
+        restore_brightness()
+        print("\n👋 脚本已退出")
+
 if __name__ == "__main__":
-    main()
+    run_main()
