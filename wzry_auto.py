@@ -33,12 +33,22 @@ _ADB = _shutil.which("adb") or (
     "/tmp/platform-tools/adb" if Path("/tmp/platform-tools/adb").exists() else "adb"
 )
 ADB = _ADB
-DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.165:5557")
+DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.197:38983")
 BASE_W, BASE_H = 1280, 720
 
 # 摇杆配置（从测试结果）
 JOYSTICK_CENTER = (160, 486)
 JOYSTICK_RADIUS = 200
+
+# 步骤6移动参数（按分辨率配置）
+# 格式: (w,h): {"center": (cx,cy), "angle": 度, "distance": px, "duration": ms}
+STEP6_CONFIG = {
+    (1280, 720): {"center": (160, 486), "angle": 120, "distance": 200, "duration": 1500},
+    (2400, 1080): {"center": (430, 755), "angle": 120, "distance": 250, "duration": 1500},
+}
+
+# 默认步骤6配置
+_step6_cfg = {"center": (160, 486), "angle": 120, "distance": 200, "duration": 1500}
 
 # ============================================================
 # 统计数据
@@ -51,13 +61,14 @@ class Stats:
         self.total_crops = {}    # 累计收获作物 {作物名: 数量}
         self.start_time = datetime.now()
     
-    def add_harvest(self, exp=0, crop_name="", count=0):
+    def add_harvest(self, exp=0, crops=None):
         """记录一次收获"""
         self.harvests += 1
         if exp > 0:
             self.total_exp += exp
-        if crop_name and count > 0:
-            self.total_crops[crop_name] = self.total_crops.get(crop_name, 0) + count
+        if crops:
+            for name, count in crops.items():
+                self.total_crops[name] = self.total_crops.get(name, 0) + count
     
     def summary(self):
         elapsed = datetime.now() - self.start_time
@@ -105,8 +116,9 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time):
     remain_min = delta_sec / 60
     print(f"  💧 第一次浇水后显示剩余时间：{remain_min:.2f} 分钟")
     
-    # 匹配作物原始周期（游戏固定4种作物）
+    # 匹配作物原始周期（游戏固定5种作物）
     plant_rules = [
+        {"cycle": 5, "remain": 5},       # 5分钟
         {"cycle": 60, "remain": 55},     # 1小时
         {"cycle": 480, "remain": 400},   # 8小时
         {"cycle": 960, "remain": 800},   # 16小时
@@ -272,9 +284,9 @@ def click_template(template_name, screenshot_path, threshold=0.6, label=""):
 # ============================================================
 # 摇杆操作
 # ============================================================
-def move_joystick(angle_deg, distance=200, duration_ms=1500):
+def move_joystick(angle_deg, distance=200, duration_ms=1500, center=None):
     """向指定角度推动摇杆"""
-    cx, cy = JOYSTICK_CENTER
+    cx, cy = center or JOYSTICK_CENTER
     angle_rad = math.radians(angle_deg)
     tx = int(cx + distance * math.cos(angle_rad))
     ty = int(cy - distance * math.sin(angle_rad))
@@ -310,21 +322,33 @@ def get_ocr():
 
 def read_maturity_time(screenshot_path):
     """从截图中读取成熟时间（绝对时间，如16:46=16点46分）
-    返回: (hour, minute) 元组，或None
+    返回: ((hour, minute), is_mature) 
+        - 识别到时间: ((hour, minute), False)
+        - 作物已成熟可收获: (None, True)
+        - 无法识别: (None, False)
     """
     import re
 
     img = cv2.imread(screenshot_path)
     if img is None:
-        return None
+        return None, False
 
-    # 裁剪成熟时间区域（左侧面板）
-    roi = img[250:400, 0:300]
+    # 裁剪成熟时间区域（左侧面板，覆盖"xx:xx成熟"和"可收获"区域）
+    h, w = img.shape[:2]
+    roi = img[h//3:2*h//3, 0:w//3]
 
     ocr = get_ocr()
     result, _ = ocr(roi)
 
     if result:
+        all_text = " ".join([line[1] for line in result])
+        print(f"  📝 OCR文本: {all_text}")
+        
+        # 检查是否显示"可收获"或"已成熟"（作物已经成熟）
+        if "可收获" in all_text or "已成熟" in all_text:
+            return None, True
+        
+        # 匹配成熟时间（如 "18:25成熟"）
         for line in result:
             text = line[1]
             time_match = re.search(r'(\d{1,2}):(\d{2})', text)
@@ -332,13 +356,13 @@ def read_maturity_time(screenshot_path):
                 hour = int(time_match.group(1))
                 minute = int(time_match.group(2))
                 print(f"  🕐 OCR识别: {hour}点{minute:02d}分")
-                return (hour, minute)
+                return (hour, minute), False
 
-    return None
+    return None, False
 
 def read_harvest_info(screenshot_path):
     """从收获弹窗截图中OCR识别收获信息
-    返回: {"exp": int, "crop": str, "count": int} 或 None
+    返回: {"exp": int, "crops": {作物名: 数量}} 或 None
     """
     import re
     
@@ -363,36 +387,57 @@ def read_harvest_info(screenshot_path):
     all_text = " ".join([line[1] for line in result])
     print(f"  📝 OCR文本: {all_text}")
     
-    harvest = {"exp": 0, "crop": "", "count": 0}
+    harvest = {"exp": 0, "crops": {}}
     
-    # 识别经验: "+20经验" "经验+20" "EXP+20" 等
-    exp_match = re.search(r'[+＋](\d+)\s*[经経]验', all_text)
+    # 识别经验
+    # 匹配: "XP" + 数字, "农场经验" + 数字, "+数字经验", "经验+数字"
+    exp_match = re.search(r'XP\s*(\d+)', all_text)
+    if not exp_match:
+        exp_match = re.search(r'(\d+)\s*XP', all_text)
+    if not exp_match:
+        exp_match = re.search(r'[+＋](\d+)\s*[经経]验', all_text)
     if not exp_match:
         exp_match = re.search(r'[经経]验\s*[+＋](\d+)', all_text)
     if exp_match:
         harvest["exp"] = int(exp_match.group(1))
     
-    # 识别作物名和数量: "番茄 x5" "洋葱×3" "小麦*10" 等
-    crop_names = ["番茄", "洋葱", "小麦", "土豆", "胡萝卜", "白菜", "玉米", 
-                  "南瓜", "草莓", "西瓜", "辣椒", "茄子", "黄瓜", "大豆"]
-    for name in crop_names:
-        if name in all_text:
-            harvest["crop"] = name
-            # 找数量
-            count_match = re.search(rf'{name}\s*[x×*＊]\s*(\d+)', all_text)
-            if not count_match:
-                count_match = re.search(rf'(\d+)\s*个', all_text)
-            if count_match:
-                harvest["count"] = int(count_match.group(1))
-            break
+    # 识别作物名和数量
+    # OCR输出格式: 作物名和数字可能在不同行，按x坐标排序配对
+    crop_names = {"番茄", "洋葱", "小麦", "土豆", "胡萝卜", "白菜", "玉米",
+                  "南瓜", "草莓", "西瓜", "辣椒", "茄子", "黄瓜", "大豆"}
     
-    # 如果没匹配到预设作物名，尝试通用数量匹配
-    if not harvest["crop"]:
-        count_match = re.search(r'(\d+)\s*个', all_text)
-        if count_match:
-            harvest["count"] = int(count_match.group(1))
+    # 提取所有文字及其位置
+    items = []
+    for line in result:
+        text = line[1]
+        x = line[0][0][0]  # 左上角x坐标
+        y = line[0][0][1]  # 左上角y坐标
+        items.append({"text": text, "x": x, "y": y})
     
-    if harvest["exp"] > 0 or harvest["count"] > 0:
+    # 按y坐标排序，找数字行和作物名行的配对
+    numbers = []  # [(x, value)]
+    crops_found = []  # [(x, name)]
+    
+    for item in items:
+        text = item["text"].strip()
+        if text in crop_names:
+            crops_found.append((item["x"], text))
+        elif text.isdigit() and int(text) > 0:
+            numbers.append((item["x"], int(text)))
+    
+    # 配对: 每个作物名找最近的数字（同y坐标或下方）
+    for cx, cname in crops_found:
+        best_num = 0
+        best_dist = float("inf")
+        for nx, nval in numbers:
+            dist = abs(nx - cx)
+            if dist < best_dist:
+                best_dist = dist
+                best_num = nval
+        if best_num > 0:
+            harvest["crops"][cname] = harvest["crops"].get(cname, 0) + best_num
+    
+    if harvest["exp"] > 0 or harvest["crops"]:
         return harvest
     return None
 
@@ -552,9 +597,10 @@ def step6_move_to_statue():
         print("  🔄 不在初始位置，刷新站位...")
         reset_position()
     
-    # 向左上方60度移动
-    move_joystick(120, 200, 1500)  # 120度是左上方
-    print("  ⏳ 等待移动...")
+    # 使用分辨率专属配置或默认参数
+    cfg = _step6_cfg
+    move_joystick(cfg["angle"], cfg["distance"], cfg["duration"], center=cfg["center"])
+    print(f"  ⏳ 等待移动...")
     time.sleep(5)
     return True
 
@@ -597,15 +643,14 @@ def step8_close_harvest():
             harvest_info = read_harvest_info(SCREENSHOT_PATH)
             if harvest_info:
                 exp = harvest_info["exp"]
-                crop = harvest_info["crop"]
-                count = harvest_info["count"]
+                crops = harvest_info["crops"]
                 detail = []
                 if exp > 0:
                     detail.append(f"经验+{exp}")
-                if crop:
-                    detail.append(f"{crop}×{count}" if count else crop)
+                for cname, ccount in crops.items():
+                    detail.append(f"{cname}×{ccount}")
                 print(f"  🎉 收获: {' '.join(detail)}")
-                stats.add_harvest(exp=exp, crop_name=crop, count=count)
+                stats.add_harvest(exp=exp, crops=crops)
             else:
                 stats.add_harvest()
             
@@ -626,22 +671,26 @@ def step8_close_harvest():
 # ============================================================
 # 步骤9: 移动到土地
 # ============================================================
-def step9_move_to_farmland():
-    """步骤9: 移动到土地，读取成熟时间，计算浇水计划"""
+def step9_move_to_farmland(first_water_time):
+    """步骤9: 移动到土地，读取成熟时间，计算浇水计划
+    
+    :param first_water_time: 一键务农时间（由main传入，在移动前记录）
+    """
     print("\n[步骤9] 移动到土地...")
     
     # 向上方移动
-    move_joystick(90, 200, 1500)  # 90度是正上方
+    move_joystick(90, 200, 1200)  # 90度是正上方
     print("  ⏳ 等待移动...")
     time.sleep(5)
     
-    # 记录当前时间（一键务农时间）
-    first_water_time = datetime.now()
-    print(f"  🕐 一键务农时间: {first_water_time.strftime('%H:%M:%S')}")
-    
     # 截图OCR
     screenshot(SCREENSHOT_PATH)
-    maturity_time = read_maturity_time(SCREENSHOT_PATH)
+    maturity_time, is_mature = read_maturity_time(SCREENSHOT_PATH)
+    
+    # 如果作物已成熟（可收获），不需要等待
+    if is_mature:
+        print("  🌾 作物已成熟，无需等待")
+        return None, None, None
     
     # 计算浇水计划
     result = None
@@ -670,6 +719,13 @@ def step10_calculate_wait(maturity_time, result, maturity_dt):
     :param maturity_dt: 成熟时间 (datetime)
     """
     print("\n[步骤10] 计算等待时间...")
+    
+    # 如果所有参数都为None，说明作物已成熟可收获，直接重启收割
+    if maturity_time is None and result is None and maturity_dt is None:
+        print("  🌾 作物已成熟，退出游戏重新进入收割...")
+        adb_shell(f"am force-stop {GAME_PKG}")
+        time.sleep(3)
+        return True
     
     # 先杀掉游戏
     print("  🛑 退出王者荣耀...")
@@ -746,13 +802,35 @@ def check_adb_connection():
 
 def main():
     """主流程"""
+    global JOYSTICK_CENTER, _step6_cfg
     print("=" * 60)
     print("王者荣耀农场自动化务农 v2")
     print("=" * 60)
+    # 显示支持的分辨率及参数
+    for (w, h), cfg in STEP6_CONFIG.items():
+        print(f"  📐 {w}x{h}: 中心{cfg['center']} {cfg['angle']}° {cfg['distance']}px {cfg['duration']}ms")
     
     # 启动前检查ADB连接
     if not check_adb_connection():
         return
+    
+    # 检测设备分辨率
+    dev_w, dev_h = detect_resolution()
+    print(f"  📐 分辨率 {dev_w}x{dev_h}")
+    
+    # 加载分辨率专属步骤6配置
+    res_key = (dev_w, dev_h)
+    if res_key in STEP6_CONFIG:
+        _step6_cfg = STEP6_CONFIG[res_key].copy()
+        JOYSTICK_CENTER = _step6_cfg["center"]
+        print(f"  🎯 步骤6使用专属配置: 中心{JOYSTICK_CENTER} 角度{_step6_cfg['angle']}° 距离{_step6_cfg['distance']}px 时间{_step6_cfg['duration']}ms")
+    else:
+        if dev_w != BASE_W or dev_h != BASE_H:
+            sx = dev_w / BASE_W
+            sy = dev_h / BASE_H
+            JOYSTICK_CENTER = (int(160 * sx), int(486 * sy))
+        _step6_cfg = {"center": JOYSTICK_CENTER, "angle": 120, "distance": 200, "duration": 1500}
+        print(f"  🎯 步骤6使用默认配置: 中心{JOYSTICK_CENTER} 角度120° 距离200px 时间1500ms")
     
     round_num = 0
     while True:
@@ -793,8 +871,12 @@ def main():
         # 步骤8: 关闭收获弹窗
         step8_close_harvest()
         
+        # 记录一键务农时间（在步骤9移动前）
+        first_water_time = datetime.now()
+        print(f"  🕐 一键务农时间: {first_water_time.strftime('%H:%M:%S')}")
+        
         # 步骤9: 移动到土地，读取成熟时间，计算浇水计划
-        maturity_time, result, maturity_dt = step9_move_to_farmland()
+        maturity_time, result, maturity_dt = step9_move_to_farmland(first_water_time)
         
         # 步骤10: 根据成熟时间和浇水时间计算等待时间
         step10_calculate_wait(maturity_time, result, maturity_dt)

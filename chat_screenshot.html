@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  width: 375px;
+  height: 667px;
+  background: #EDEDED;
+  font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  overflow: hidden;
+}
+.status-bar {
+  height: 44px;
+  background: #EDEDED;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #000;
+}
+.nav-bar {
+  height: 44px;
+  background: #EDEDED;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  border-bottom: 0.5px solid #D6D6D6;
+}
+.nav-bar .back {
+  position: absolute;
+  left: 12px;
+  font-size: 20px;
+  color: #000;
+}
+.nav-bar .title {
+  font-size: 17px;
+  font-weight: 600;
+  color: #000;
+}
+.nav-bar .dots {
+  position: absolute;
+  right: 12px;
+  font-size: 20px;
+  color: #000;
+}
+.chat-area {
+  flex: 1;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: calc(667px - 44px - 44px - 56px);
+}
+.msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.msg.right {
+  flex-direction: row-reverse;
+}
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.avatar.blue {
+  background: linear-gradient(135deg, #4A90D9, #357ABD);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+}
+.avatar.green {
+  background: linear-gradient(135deg, #4CD964, #34C759);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 18px;
+  font-weight: 600;
+}
+.bubble {
+  max-width: 220px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 16px;
+  line-height: 1.45;
+  color: #000;
+  position: relative;
+}
+.bubble.white {
+  background: #FFFFFF;
+}
+.bubble.white::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 12px;
+  border: 6px solid transparent;
+  border-right-color: #FFFFFF;
+}
+.bubble.green-bubble {
+  background: #95EC69;
+}
+.bubble.green-bubble::before {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 12px;
+  border: 6px solid transparent;
+  border-left-color: #95EC69;
+}
+.input-bar {
+  height: 56px;
+  background: #F7F7F7;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  gap: 8px;
+  border-top: 0.5px solid #D6D6D6;
+}
+.input-bar .voice {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+}
+.input-bar .input-box {
+  flex: 1;
+  height: 36px;
+  background: #FFFFFF;
+  border-radius: 6px;
+  border: 0.5px solid #D6D6D6;
+}
+.input-bar .emoji {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+}
+.input-bar .more {
+  width: 32px;
+  height: 32px;
+  background: #07C160;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 20px;
+  font-weight: bold;
+}
+</style>
+</head>
+<body>
+<div style="display:flex;flex-direction:column;height:100%;">
+  <div class="status-bar">
+    <span>9:41</span>
+    <span>📶 🔋</span>
+  </div>
+  <div class="nav-bar">
+    <span class="back">‹</span>
+    <span class="title">赛博农民</span>
+    <span class="dots">⋯</span>
+  </div>
+  <div class="chat-area">
+    <!-- 同事消息 -->
+    <div class="msg">
+      <div class="avatar blue">同</div>
+      <div class="bubble white">你最近在忙什么</div>
+    </div>
+    <!-- 我的消息 -->
+    <div class="msg right">
+      <div class="avatar green">我</div>
+      <div class="bubble green-bubble">在帮我农民算他什么时候下班</div>
+    </div>
+    <!-- 同事消息 -->
+    <div class="msg">
+      <div class="avatar blue">同</div>
+      <div class="bubble white">？</div>
+    </div>
+    <!-- 我的消息 -->
+    <div class="msg right">
+      <div class="avatar green">我</div>
+      <div class="bubble green-bubble">他比我准时</div>
+    </div>
+  </div>
+  <div class="input-bar">
+    <div class="voice">🎤</div>
+    <div class="input-box"></div>
+    <div class="emoji">😊</div>
+    <div class="more">+</div>
+  </div>
+</div>
+</body>
+</html>
