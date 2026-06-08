@@ -75,124 +75,55 @@ signal.signal(signal.SIGTERM, signal_handler)
 # ============================================================
 # 浇水时间计算
 # ============================================================
-def calculate_watering_schedule(plant_hours, start_time=None):
+def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time):
     """
-    计算王者农场作物的最优浇水时间点
-    :param plant_hours: 作物原始成熟时长（小时）
-    :param start_time: 种植开始时间，默认是当前时间
-    :return: (schedule列表, final_minutes)
+    根据第一次浇水时间 + 第一次浇水后显示的成熟时间
+    自动计算：作物周期、后续完美浇水时间、最终成熟时间
+    :param first_water_time: 第一次浇水时间 (datetime)
+    :param show_mature_time: 第一次浇水后显示的成熟时间 (datetime)
+    :return: dict with plant_cycle_min, water2, water3, mature_time
     """
-    if start_time is None:
-        start_time = datetime.now()
+    time_format = "%H:%M:%S"
     
-    total_minutes = plant_hours * 60
-    # 固定比例：最终耗时 = 原始时长 * 11/15
-    final_minutes = total_minutes * 11 / 15
-    total_reduction = total_minutes - final_minutes
+    # 计算第一次浇水后剩余分钟
+    delta_sec = (show_mature_time - first_water_time).total_seconds()
+    remain_min = delta_sec / 60
+    print(f"  💧 第一次浇水后显示剩余时间：{remain_min:.2f} 分钟")
     
-    # 前3次减时 = 原始时长 / 12
-    first_three_reduction = total_minutes / 12
+    # 匹配作物原始周期（游戏固定4种作物）
+    plant_rules = [
+        {"cycle": 60, "remain": 55},     # 1小时
+        {"cycle": 480, "remain": 400},   # 8小时
+        {"cycle": 960, "remain": 800},   # 16小时
+        {"cycle": 1920, "remain": 1600}, # 32小时
+    ]
     
-    schedule = []
-    remaining = total_minutes
-    current_time = start_time
+    # 找最接近的作物周期
+    best_match = min(plant_rules, key=lambda x: abs(x["remain"] - remain_min))
+    cycle_min = best_match["cycle"]
+    cycle_hour = cycle_min // 60
     
-    # 第1次浇水（种下立刻浇）
-    reduction = first_three_reduction
-    remaining -= reduction
-    schedule.append({
-        "step": 1,
-        "action": "种植+第一次浇水",
-        "time": current_time,
-        "reduction": round(reduction, 2),
-        "remaining_after": round(remaining, 2)
-    })
+    # 计算完美浇水时间点（从第一次浇水开始算）
+    water2_rel = cycle_min / 3
+    water3_rel = cycle_min * 2 / 3
+    water4_rel = cycle_min * 11 / 15  # 第四次 = 完美成熟
     
-    # 第2次浇水
-    interval = remaining * 4 / 11
-    current_time += timedelta(minutes=interval)
-    remaining -= interval
-    reduction = first_three_reduction
-    remaining -= reduction
-    schedule.append({
-        "step": 2,
-        "action": "第二次浇水",
-        "time": current_time,
-        "reduction": round(reduction, 2),
-        "remaining_after": round(remaining, 2)
-    })
+    # 转换为真实时间
+    water2_time = first_water_time + timedelta(minutes=water2_rel)
+    water3_time = first_water_time + timedelta(minutes=water3_rel)
+    water4_time = first_water_time + timedelta(minutes=water4_rel)
     
-    # 第3次浇水
-    interval = remaining * 4 / 11
-    current_time += timedelta(minutes=interval)
-    remaining -= interval
-    reduction = first_three_reduction
-    remaining -= reduction
-    schedule.append({
-        "step": 3,
-        "action": "第三次浇水",
-        "time": current_time,
-        "reduction": round(reduction, 2),
-        "remaining_after": round(remaining, 2)
-    })
+    print(f"  🌱 作物原始周期：{cycle_hour} 小时（{cycle_min} 分钟）")
+    print(f"  💧 第二次完美浇水时间：{water2_time.strftime(time_format)}")
+    print(f"  💧 第三次完美浇水时间：{water3_time.strftime(time_format)}")
+    print(f"  🌾 第四次浇水（成熟收获）：{water4_time.strftime(time_format)}")
     
-    # 第4次浇水（直接成熟）
-    interval = remaining * 4 / 11
-    current_time += timedelta(minutes=interval)
-    remaining -= interval
-    reduction = remaining
-    remaining -= reduction
-    schedule.append({
-        "step": 4,
-        "action": "第四次浇水（直接成熟）",
-        "time": current_time,
-        "reduction": round(reduction, 2),
-        "remaining_after": round(remaining, 2)
-    })
-    
-    return schedule, final_minutes
-
-def calculate_next_watering(maturity_time_str, current_time):
-    """
-    根据OCR读取的成熟时间计算下次浇水时间
-    :param maturity_time_str: OCR识别的成熟时间，如 "18:25"
-    :param current_time: 当前时间
-    :return: (next_watering_time, maturity_datetime, schedule) 或 None
-    """
-    import re
-    match = re.search(r'(\d{1,2}):(\d{2})', maturity_time_str)
-    if not match:
-        return None
-    
-    hour, minute = int(match.group(1)), int(match.group(2))
-    maturity_dt = current_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    
-    # 如果成熟时间已过，说明是明天的
-    if maturity_dt <= current_time:
-        maturity_dt += timedelta(days=1)
-    
-    # 剩余分钟数
-    remaining_minutes = (maturity_dt - current_time).total_seconds() / 60
-    
-    # 反推原始种植时长
-    # final_minutes = total_minutes * 11/15
-    # total_minutes = final_minutes * 15/11
-    total_minutes = remaining_minutes * 15 / 11
-    plant_hours = total_minutes / 60
-    
-    print(f"  🌱 反推原始种植时长: {plant_hours:.2f} 小时 ({total_minutes:.0f} 分钟)")
-    print(f"  🌱 浇水后最终成熟时间: {maturity_dt.strftime('%H:%M')}")
-    
-    # 计算浇水计划（从当前时间开始，步骤1已完成）
-    schedule, final = calculate_watering_schedule(plant_hours, current_time)
-    
-    # 下次浇水是步骤2
-    if len(schedule) >= 2:
-        next_watering = schedule[1]["time"]
-        print(f"  💧 下次浇水时间: {next_watering.strftime('%H:%M')} (步骤2)")
-        return next_watering, maturity_dt, schedule
-    
-    return None
+    return {
+        "plant_cycle_min": cycle_min,
+        "water2": water2_time,
+        "water3": water3_time,
+        "mature_time": water4_time
+    }
 
 # ============================================================
 # ADB 基础操作
@@ -421,7 +352,7 @@ def step4_close_popup():
     miss_count = 0
     for i in range(10):  # 最多处理10个弹窗
         screenshot(SCREENSHOT_PATH)
-        result = find_template("close_popup.png", SCREENSHOT_PATH, 0.7)
+        result = find_template("close_popup.png", SCREENSHOT_PATH, 0.9)
 
         if result:
             x, y = result["x"], result["y"]
@@ -546,36 +477,38 @@ def step9_move_to_farmland():
     print("  ⏳ 等待移动...")
     time.sleep(5)
     
-    # 记录当前时间
-    current_time = datetime.now()
-    print(f"  🕐 当前时间: {current_time.strftime('%H:%M:%S')}")
+    # 记录当前时间（一键务农时间）
+    first_water_time = datetime.now()
+    print(f"  🕐 一键务农时间: {first_water_time.strftime('%H:%M:%S')}")
     
     # 截图OCR
     screenshot(SCREENSHOT_PATH)
     maturity_time = read_maturity_time(SCREENSHOT_PATH)
     
     # 计算浇水计划
-    next_watering = None
+    result = None
     maturity_dt = None
-    schedule = None
     
     if maturity_time:
         hour, minute = maturity_time
-        maturity_str = f"{hour}:{minute:02d}"
-        result = calculate_next_watering(maturity_str, current_time)
-        if result:
-            next_watering, maturity_dt, schedule = result
+        # OCR读取的是成熟时间（绝对时间）
+        maturity_dt = first_water_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if maturity_dt <= first_water_time:
+            maturity_dt += timedelta(days=1)
+        
+        # 调用新的浇水计算函数
+        result = calculate_plant_cycle_and_water_time(first_water_time, maturity_dt)
     
-    return maturity_time, next_watering, maturity_dt, schedule
+    return maturity_time, result, maturity_dt
 
 # ============================================================
 # 步骤10: 计算等待时间
 # ============================================================
-def step10_calculate_wait(maturity_time, next_watering, maturity_dt):
+def step10_calculate_wait(maturity_time, result, maturity_dt):
     """步骤10: 根据成熟时间和浇水时间计算等待时间并退出游戏
     
     :param maturity_time: OCR识别的 (hour, minute) 元组
-    :param next_watering: 下次浇水时间 (datetime)
+    :param result: 浇水计算结果 dict
     :param maturity_dt: 成熟时间 (datetime)
     """
     print("\n[步骤10] 计算等待时间...")
@@ -590,20 +523,22 @@ def step10_calculate_wait(maturity_time, next_watering, maturity_dt):
     wake_time = None
     reason = ""
     
-    if maturity_dt and next_watering:
-        # 比较成熟时间 vs 下次浇水时间
-        if next_watering < maturity_dt:
+    if result and maturity_dt:
+        # 获取下次浇水时间（water2）
+        next_watering = result.get("water2")
+        
+        if next_watering and next_watering < maturity_dt:
             wake_time = next_watering
             reason = "浇水"
-            print(f"  💧 下次浇水时间: {next_watering.strftime('%H:%M')} (早于成熟时间)")
+            print(f"  💧 下次浇水时间: {next_watering.strftime('%H:%M:%S')} (早于成熟时间)")
         else:
             wake_time = maturity_dt
             reason = "成熟"
-            print(f"  🌾 成熟时间: {maturity_dt.strftime('%H:%M')} (早于浇水时间)")
+            print(f"  🌾 成熟时间: {maturity_dt.strftime('%H:%M:%S')} (早于浇水时间)")
     elif maturity_dt:
         wake_time = maturity_dt
         reason = "成熟"
-        print(f"  🌾 成熟时间: {maturity_dt.strftime('%H:%M')}")
+        print(f"  🌾 成熟时间: {maturity_dt.strftime('%H:%M:%S')}")
     else:
         print("  ⚠️ 无法识别时间，等待5分钟后重试...")
         time.sleep(300)
@@ -629,11 +564,37 @@ def step10_calculate_wait(maturity_time, next_watering, maturity_dt):
 # ============================================================
 # 主流程
 # ============================================================
+def check_adb_connection():
+    """检查ADB连接状态，未连接则自动连接"""
+    print("🔍 检查ADB连接...")
+    result = adb_shell("get-state")
+    if "device" in result:
+        print(f"  ✅ 设备已连接: {DEVICE}")
+        return True
+    
+    # 自动连接
+    print(f"  ⚠️ 设备未连接，正在自动连接: {DEVICE}")
+    connect_result = subprocess.run(
+        f"{ADB} connect {DEVICE}", 
+        shell=True, capture_output=True, text=True, timeout=10
+    )
+    
+    if "connected" in connect_result.stdout:
+        print(f"  ✅ 自动连接成功: {DEVICE}")
+        return True
+    else:
+        print(f"  ❌ 自动连接失败: {connect_result.stdout.strip()}")
+        return False
+
 def main():
     """主流程"""
     print("=" * 60)
     print("王者荣耀农场自动化务农 v2")
     print("=" * 60)
+    
+    # 启动前检查ADB连接
+    if not check_adb_connection():
+        return
     
     round_num = 0
     while True:
@@ -677,17 +638,10 @@ def main():
             print(f"  📊 累计收获: {stats.harvests} 次")
         
         # 步骤9: 移动到土地，读取成熟时间，计算浇水计划
-        maturity_time, next_watering, maturity_dt, schedule = step9_move_to_farmland()
-        
-        # 打印浇水计划
-        if schedule:
-            print(f"\n  📋 浇水计划:")
-            for s in schedule:
-                time_str = s['time'].strftime('%H:%M') if hasattr(s['time'], 'strftime') else str(s['time'])
-                print(f"    步骤{s['step']}: {s['action']} @ {time_str}")
+        maturity_time, result, maturity_dt = step9_move_to_farmland()
         
         # 步骤10: 根据成熟时间和浇水时间计算等待时间
-        step10_calculate_wait(maturity_time, next_watering, maturity_dt)
+        step10_calculate_wait(maturity_time, result, maturity_dt)
 
 if __name__ == "__main__":
     main()
