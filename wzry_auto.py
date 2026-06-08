@@ -298,24 +298,41 @@ def step1_check_status():
     
     out = ""
     for attempt in range(3):
-        # 方法1: ResumedActivity（不用grep，Python搜索）
+        # 方法1: 精确匹配ResumedActivity行（不在历史/缓存中误匹配）
         out = adb_shell("dumpsys activity activities")
-        if GAME_PKG in out:
+        found = False
+        for line in out.splitlines():
+            stripped = line.strip()
+            if ("ResumedActivity" in stripped or "topResumedActivity" in stripped) and GAME_PKG in stripped:
+                found = True
+                break
+        if found:
             break
-        # 方法2: window focus
+        # 方法2: mCurrentFocus
         out2 = adb_shell("dumpsys window")
-        if GAME_PKG in out2:
-            out = out2
+        found2 = False
+        for line in out2.splitlines():
+            stripped = line.strip()
+            if ("mCurrentFocus" in stripped or "mFocusedApp" in stripped) and GAME_PKG in stripped:
+                found2 = True
+                break
+        if found2:
             break
         # 方法3: top activity
         out3 = adb_shell("dumpsys activity top")
-        if GAME_PKG in out3:
-            out = out3
+        found3 = False
+        for line in out3.splitlines():
+            stripped = line.strip()
+            if "ACTIVITY" in stripped and GAME_PKG in stripped:
+                found3 = True
+                break
+        if found3:
             break
         print(f"  ⚠️ 检测失败，重试 {attempt+1}/3...")
         time.sleep(2)
     
-    if GAME_PKG in out:
+    in_foreground = found or found2 or found3
+    if in_foreground:
         print("  🎮 王者荣耀在前台，退出...")
         adb_shell(f"am force-stop {GAME_PKG}")
         print("  ⏳ 等待5秒...")
