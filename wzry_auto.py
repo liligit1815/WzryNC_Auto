@@ -231,30 +231,33 @@ def find_template(template_name, screenshot_path, threshold=0.6):
         tmpl_h, tmpl_w = tmpl.shape[:2]
         tdir_label = "专用" if tdir != TEMPLATE_DIR else "默认"
         
-        # 直接匹配
-        if tmpl_w <= img_w and tmpl_h <= img_h:
-            result = cv2.matchTemplate(img, tmpl, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
-            if max_val > best_score:
-                best_score = max_val
-                best_loc = max_loc
-                best_tw, best_th = tmpl_w, tmpl_h
+        # 多尺度匹配（使用V1/V2的固定比例）
+        scales = [1.0]
+        if tmpl_w > 200:
+            # 大模板：按截图比例缩放
+            scales.append(img_w / tmpl_w)
+        else:
+            # 小模板：使用固定缩放比例
+            for s in [0.5, 0.75, 1.25, 1.5, 2.0]:
+                scales.append(s)
         
-        # 如果模板比截图小很多，多尺度匹配
-        if tmpl_w < img_w * 0.5 or tmpl_h < img_h * 0.5:
-            scale_factor = img_w / tmpl_w
-            for s in [scale_factor * 0.8, scale_factor * 0.9, scale_factor,
-                      scale_factor * 1.1, scale_factor * 1.2]:
+        for s in scales:
+            if abs(s - 1.0) < 0.01:
+                t = tmpl
+                tw, th = tmpl_w, tmpl_h
+            else:
                 nw, nh = int(tmpl_w * s), int(tmpl_h * s)
                 if nw > img_w or nh > img_h or nw < 5 or nh < 5:
                     continue
                 t = cv2.resize(tmpl, (nw, nh))
-                result = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
-                if max_val > best_score:
-                    best_score = max_val
-                    best_loc = max_loc
-                    best_tw, best_th = nw, nh
+                tw, th = nw, nh
+            
+            result = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+            if max_val > best_score:
+                best_score = max_val
+                best_loc = max_loc
+                best_tw, best_th = tw, th
     
     if not best_loc:
         print(f"  ❌ '{template_name}': 模板不存在")
