@@ -129,7 +129,7 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time):
 # ADB 基础操作
 # ============================================================
 def adb_shell(cmd):
-    """执行ADB shell命令"""
+    """执行ADB shell命令（不使用管道，兼容Windows）"""
     full_cmd = f"{ADB} -s {DEVICE} shell {cmd}"
     result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
     return result.stdout
@@ -298,17 +298,17 @@ def step1_check_status():
     
     out = ""
     for attempt in range(3):
-        # 方法1: ResumedActivity
-        out = adb_shell("dumpsys activity activities | grep -E 'ResumedActivity|topResumedActivity'")
+        # 方法1: ResumedActivity（不用grep，Python搜索）
+        out = adb_shell("dumpsys activity activities")
         if GAME_PKG in out:
             break
         # 方法2: window focus
-        out2 = adb_shell("dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'")
+        out2 = adb_shell("dumpsys window")
         if GAME_PKG in out2:
             out = out2
             break
         # 方法3: top activity
-        out3 = adb_shell("dumpsys activity top | grep ACTIVITY")
+        out3 = adb_shell("dumpsys activity top")
         if GAME_PKG in out3:
             out = out3
             break
