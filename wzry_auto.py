@@ -559,10 +559,10 @@ def read_maturity_time(screenshot_path):
         if "可收获" in all_text or "已成熟" in all_text:
             return None, True
         
-        # 匹配成熟时间（如 "18:25成熟"）
+        # 匹配成熟时间（如 "18:25成熟"、"明天00：02成熟"，兼容全角冒号）
         for line in result:
             text = line[1]
-            time_match = re.search(r'(\d{1,2}):(\d{2})', text)
+            time_match = re.search(r'(\d{1,2})[:\uff1a](\d{2})', text)
             if time_match:
                 hour = int(time_match.group(1))
                 minute = int(time_match.group(2))
