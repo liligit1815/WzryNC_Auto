@@ -212,7 +212,7 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time, sav
 def adb_shell(cmd):
     """执行ADB shell命令（不使用管道，兼容Windows）"""
     full_cmd = f"{ADB} -s {DEVICE} shell {cmd}"
-    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, timeout=10)
+    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
     return result.stdout
 
 def wake_and_unlock(password=""):
@@ -1006,7 +1006,7 @@ def check_adb_connection():
     print(f"  ⚠️ 设备未连接，正在自动连接: {DEVICE}")
     connect_result = subprocess.run(
         f"{ADB} connect {DEVICE}", 
-        shell=True, capture_output=True, text=True, timeout=10
+        shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10
     )
     
     if "connected" in connect_result.stdout:
