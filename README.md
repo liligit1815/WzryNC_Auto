@@ -95,6 +95,8 @@ pip install onnxruntime==1.17.0
 
 双击 `start.bat` 即可自动完成环境激活和脚本运行。
 
+> **注意**：如果使用 PowerShell 终端，需输入 `.\start.bat`（CMD终端直接输入 `start.bat` 即可）。
+
 **方式二：手动启动**
 
 ```cmd
