@@ -215,6 +215,12 @@ def adb_shell(cmd):
     result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
     return result.stdout
 
+def adb_shell_root(cmd):
+    """执行ADB root shell命令（用列表传参，避免cmd.exe解析>等特殊字符）"""
+    args = [ADB, "-s", DEVICE, "shell", "su", "-c", cmd]
+    result = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+    return result.stdout
+
 def wake_and_unlock(password=""):
     """唤醒屏幕并解锁"""
     global _original_brightness, _original_auto_brightness
@@ -296,7 +302,7 @@ def _reapply_low_brightness():
     if _original_brightness is None:
         return
     if _brightness_mode == 'root':
-        adb_shell("su -c \"echo 0 > /sys/class/backlight/panel0-backlight/brightness\"")
+        adb_shell_root("echo 0 > /sys/class/backlight/panel0-backlight/brightness")
     else:
         adb_shell("settings put system screen_brightness 1")
 
@@ -306,12 +312,12 @@ def set_brightness_zero_root():
     # 关闭自动亮度
     adb_shell("settings put system screen_brightness_mode 0")
     # 使用ROOT权限直接写入亮度节点
-    result = adb_shell("su -c \"echo 0 > /sys/class/backlight/panel0-backlight/brightness\"")
+    result = adb_shell_root("echo 0 > /sys/class/backlight/panel0-backlight/brightness")
     if result and ("Permission denied" in result or "error" in result.lower()):
         print(f"  ⚠️ 写入失败: {result}")
     else:
         # 验证是否写入成功
-        verify = adb_shell("su -c \"cat /sys/class/backlight/panel0-backlight/brightness\"")
+        verify = adb_shell_root("cat /sys/class/backlight/panel0-backlight/brightness")
         if verify.strip() == "0":
             print("  ✅ 已使用ROOT权限将亮度设为0")
         else:
@@ -329,8 +335,8 @@ def restore_brightness():
     # 如果使用了ROOT权限设置亮度0，先尝试恢复节点
     if _brightness_mode == 'root':
         # 尝试恢复亮度节点
-        adb_shell(f"su -c 'echo {_original_brightness} > /sys/class/backlight/panel0-backlight/brightness'")
-        adb_shell(f"su -c 'echo {_original_brightness} > /sys/class/backlight/lcd-backlight/brightness'")
+        adb_shell_root(f"echo {_original_brightness} > /sys/class/backlight/panel0-backlight/brightness")
+        adb_shell_root(f"echo {_original_brightness} > /sys/class/backlight/lcd-backlight/brightness")
     
     # 恢复亮度值
     adb_shell(f"settings put system screen_brightness {_original_brightness}")
