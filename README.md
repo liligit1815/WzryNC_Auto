@@ -14,7 +14,8 @@
 ```
 WZRY_Farm/
 ├── wzry_auto.py           # 主自动化脚本 (V3)
-├── start.sh               # 一键启动脚本 (Linux)
+├── start.bat              # Windows 一键启动
+├── start.sh               # Linux 一键启动
 ├── monitor.sh             # 监控脚本
 ├── realtime_monitor.sh    # 实时监控脚本
 ├── README.md              # 说明文档
@@ -44,6 +45,8 @@ WZRY_Farm/
 ```cmd
 python --version
 ```
+
+> **注意**：Python 3.14+ 在Windows上可能有GBK编码问题，脚本已内置修复。推荐使用 Python 3.11-3.13。
 
 ### 2. 安装 ADB
 
@@ -87,6 +90,12 @@ pip install onnxruntime==1.17.0
 同时安装 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
 
 ### 5. 运行脚本
+
+**方式一：一键启动（推荐）**
+
+双击 `start.bat` 即可自动完成环境激活和脚本运行。
+
+**方式二：手动启动**
 
 ```cmd
 venv\Scripts\activate
@@ -213,6 +222,14 @@ pkill -f wzry_auto.py
 ### Q: 脚本运行无输出
 A: 确保使用 `-u` 参数：
 ```cmd
+python -u wzry_auto.py
+```
+或直接双击 `start.bat`。
+
+### Q: Windows 报 UnicodeDecodeError (gbk codec)
+A: 脚本已内置UTF-8编码修复。如仍报错，确认使用最新版本代码，或手动设置环境变量：
+```cmd
+set PYTHONIOENCODING=utf-8
 python -u wzry_auto.py
 ```
 
