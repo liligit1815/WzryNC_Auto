@@ -10,7 +10,7 @@ if defined WT_SESSION (
 where wt.exe >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Launching in Windows Terminal...
-    wt.exe -d "%~dp0" cmd /k "cd /d "%~dp0" && "%~f0""
+    wt.exe cmd /k "cd /d "%~dp0" && "%~f0""
     exit /b
 )
 
