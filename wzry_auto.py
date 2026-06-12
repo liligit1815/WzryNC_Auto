@@ -30,10 +30,12 @@ GAME_ACT = f"{GAME_PKG}/com.tencent.tmgp.sgame.SGameActivity"
 # 模拟器配置
 import shutil as _shutil
 _ADB = _shutil.which("adb") or (
-    "/tmp/platform-tools/adb" if Path("/tmp/platform-tools/adb").exists() else "adb"
+    "/home/lili/android-tools/platform-tools/adb"
+    if Path("/home/lili/android-tools/platform-tools/adb").exists()
+    else "/tmp/platform-tools/adb" if Path("/tmp/platform-tools/adb").exists() else "adb"
 )
 ADB = _ADB
-DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.197:38983")
+DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.197:39797")
 UNLOCK_PWD = os.environ.get("WZRY_UNLOCK_PWD", "")  # 锁屏密码，为空则不输入密码
 BASE_W, BASE_H = 1280, 720
 
@@ -216,9 +218,10 @@ def adb_shell(cmd):
     return result.stdout
 
 def adb_shell_root(cmd):
-    """执行ADB root shell命令（用列表传参，避免cmd.exe解析>等特殊字符）"""
-    args = [ADB, "-s", DEVICE, "shell", "su", "-c", cmd]
-    result = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+    """执行ADB root shell命令（单引号包裹防止>被本地shell解析）"""
+    full_cmd = f"{ADB} -s {DEVICE} shell 'su -c \"{cmd}\"'"
+    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=15)
     return result.stdout
 
 def wake_and_unlock(password=""):
@@ -722,6 +725,42 @@ def step2_launch_game():
     time.sleep(40)
     return True
 
+
+# ============================================================
+# 步骤2b: 关闭启动弹窗
+# ============================================================
+def step2b_close_startup_popups():
+    """步骤2b: 启动后关闭弹窗（逻辑与步骤4一致）"""
+    print("\n[步骤2b] 关闭启动弹窗...")
+
+    miss_count = 0
+    for i in range(10):  # 最多处理10个弹窗
+        screenshot(SCREENSHOT_PATH)
+        result = find_template("close_popup.png", SCREENSHOT_PATH, 0.9)
+
+        if result:
+            x, y = result["x"], result["y"]
+            # 位置校验：弹窗关闭按钮应在屏幕中央区域（x>800, y<200）
+            if x > 800 and y < 200:
+                tap(x, y, "关闭启动弹窗")
+                miss_count = 0  # 重置未匹配计数
+                print("  ⏳ 等待5秒...")
+                time.sleep(5)
+            else:
+                miss_count += 1
+                print(f"  ⚠️ 位置不匹配 ({x},{y})，未匹配 {miss_count}/3")
+        else:
+            miss_count += 1
+            print(f"  ⚠️ 未找到弹窗，未匹配 {miss_count}/3")
+
+        # 连续3次未匹配，认为弹窗全部关闭
+        if miss_count >= 3:
+            print("  ✅ 启动弹窗处理完毕（连续3次未匹配）")
+            break
+
+    return True
+
+
 # ============================================================
 # 步骤3: 点击开始游戏
 # ============================================================
@@ -1071,7 +1110,10 @@ def main():
         
         # 步骤2: 启动游戏
         step2_launch_game()
-        
+
+        # 步骤2b: 关闭启动弹窗
+        step2b_close_startup_popups()
+
         # 步骤3: 点击开始游戏
         if not step3_click_start_game():
             print("\n⚠️ 步骤3失败，重新开始...")
