@@ -238,8 +238,10 @@ def wake_and_unlock(password=""):
     
     # 如果之前设置了低亮度，先应用再唤醒（防止闪亮）
     if _original_brightness is not None:
-        if _brightness_mode == 'root':
-            set_brightness_zero_root()
+        if _brightness_mode == 'root_zero':
+            adb_shell_root("echo 0 > /sys/class/backlight/panel0-backlight/brightness")
+        elif _brightness_mode == 'root_one':
+            adb_shell_root("echo 1 > /sys/class/backlight/panel0-backlight/brightness")
         else:
             adb_shell("settings put system screen_brightness_mode 0")
             adb_shell("settings put system screen_brightness 1")
@@ -268,7 +270,7 @@ def wake_and_unlock(password=""):
 # ============================================================
 _original_brightness = None
 _original_auto_brightness = None
-_brightness_mode = None  # 'low' 或 'root'
+_brightness_mode = None  # 'low' / 'root_zero' / 'root_one'
 
 def get_brightness_settings():
     """获取当前亮度设置"""
@@ -304,27 +306,46 @@ def _reapply_low_brightness():
     """重新应用低亮度（杀游戏后调用，防止系统恢复亮度）"""
     if _original_brightness is None:
         return
-    if _brightness_mode == 'root':
+    if _brightness_mode == 'root_zero':
         adb_shell_root("echo 0 > /sys/class/backlight/panel0-backlight/brightness")
+    elif _brightness_mode == 'root_one':
+        adb_shell_root("echo 1 > /sys/class/backlight/panel0-backlight/brightness")
     else:
         adb_shell("settings put system screen_brightness 1")
 
 def set_brightness_zero_root():
     """使用ROOT权限将亮度设为0"""
-    print("  🔅 使用ROOT权限设置亮度为0...")
+    print("  🔅 使用ROOT权限设置亮度为0")
     # 关闭自动亮度
     adb_shell("settings put system screen_brightness_mode 0")
     # 使用ROOT权限直接写入亮度节点
     result = adb_shell_root("echo 0 > /sys/class/backlight/panel0-backlight/brightness")
     if result and ("Permission denied" in result or "error" in result.lower()):
-        print(f"  ⚠️ 写入失败: {result}")
+        print(f"    ⚠️ 写入失败: {result}")
     else:
         # 验证是否写入成功
         verify = adb_shell_root("cat /sys/class/backlight/panel0-backlight/brightness")
         if verify.strip() == "0":
-            print("  ✅ 已使用ROOT权限将亮度设为0")
+            print("    ✅ 已使用ROOT权限将亮度设为0")
         else:
-            print(f"  ⚠️ 验证失败，当前亮度: {verify.strip()}")
+            print(f"    ⚠️ 验证失败，当前亮度: {verify.strip()}")
+
+def set_brightness_one_root():
+    """使用ROOT权限将亮度设为1"""
+    print("  🔅 使用ROOT权限设置亮度为1")
+    # 关闭自动亮度
+    adb_shell("settings put system screen_brightness_mode 0")
+    # 使用ROOT权限直接写入亮度节点
+    result = adb_shell_root("echo 1 > /sys/class/backlight/panel0-backlight/brightness")
+    if result and ("Permission denied" in result or "error" in result.lower()):
+        print(f"    ⚠️ 写入失败: {result}")
+    else:
+        # 验证是否写入成功
+        verify = adb_shell_root("cat /sys/class/backlight/panel0-backlight/brightness")
+        if verify.strip() == "1":
+            print("    ✅ 已使用ROOT权限将亮度设为1")
+        else:
+            print(f"    ⚠️ 验证失败，当前亮度: {verify.strip()}")
 
 def restore_brightness():
     """恢复原始亮度设置"""
@@ -335,8 +356,8 @@ def restore_brightness():
     
     print("  🔆 恢复亮度设置...")
     
-    # 如果使用了ROOT权限设置亮度0，先尝试恢复节点
-    if _brightness_mode == 'root':
+    # 如果使用了ROOT权限设置亮度，先尝试恢复节点
+    if _brightness_mode in ('root_zero', 'root_one'):
         # 尝试恢复亮度节点
         adb_shell_root(f"echo {_original_brightness} > /sys/class/backlight/panel0-backlight/brightness")
         adb_shell_root(f"echo {_original_brightness} > /sys/class/backlight/lcd-backlight/brightness")
@@ -357,13 +378,14 @@ def prompt_brightness_control():
     print("\n" + "=" * 60)
     print("💡 是否降低屏幕亮度以减少烧屏风险？")
     print("=" * 60)
-    print("  Y - 关闭自动亮度，亮度降至最低(1)")
-    print("  R - 使用ROOT权限，亮度设为0（突破厂商限制）")
+    print("  Y - 普通模式，亮度降至最低(1)")
+    print("  R - ROOT权限，亮度设为0（屏幕全黑）")
+    print("  1 - ROOT权限，亮度设为1（极低亮度）")
     print("  N - 保持当前亮度设置")
     print("=" * 60)
     
     while True:
-        choice = input("请选择 (Y/R/N): ").strip().upper()
+        choice = input("请选择 (Y/R/1/N): ").strip().upper()
         if choice in ['Y', 'YES']:
             get_brightness_settings()
             set_brightness_low()
@@ -371,12 +393,16 @@ def prompt_brightness_control():
         elif choice in ['R', 'ROOT']:
             get_brightness_settings()
             set_brightness_zero_root()
-            return 'root'
+            return 'root_zero'
+        elif choice == '1':
+            get_brightness_settings()
+            set_brightness_one_root()
+            return 'root_one'
         elif choice in ['N', 'NO']:
             print("  ℹ️ 保持当前亮度设置")
             return None
         else:
-            print("  ⚠️ 请输入 Y、R 或 N")
+            print("  ⚠️ 请输入 Y、R、1 或 N")
 
 def screenshot(path=SCREENSHOT_PATH):
     """截图"""
