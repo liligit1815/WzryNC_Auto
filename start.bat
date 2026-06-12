@@ -1,6 +1,20 @@
 @echo off
 cd /d "%~dp0"
 
+:: 如果已在 Windows Terminal 中运行，直接执行
+if defined WT_SESSION (
+    goto :run
+)
+
+:: 尝试用 Windows Terminal 启动
+where wt.exe >nul 2>&1
+if not errorlevel 1 (
+    echo [INFO] Launching in Windows Terminal...
+    wt.exe -d "%~dp0" cmd /k "cd /d "%~dp0" && "%~f0""
+    exit /b
+)
+
+:run
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found. Install Python 3.11+ from https://www.python.org/downloads/
