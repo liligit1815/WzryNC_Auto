@@ -1,10 +1,8 @@
 @echo off
 cd /d "%~dp0"
 
-:: 如果已在 Windows Terminal 中运行，直接执行
 if defined WT_SESSION goto :run
 
-:: 尝试用 Windows Terminal 启动（直接运行本脚本的完整路径）
 where wt.exe >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Launching in Windows Terminal...
@@ -15,14 +13,14 @@ if not errorlevel 1 (
 :run
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python not found. Install Python 3.11+ from https://www.python.org/downloads/
+    echo [ERROR] Python not found. Install Python 3.11+
     pause
     exit /b 1
 )
 
 adb version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] ADB not found. Install platform-tools and add to PATH
+    echo [ERROR] ADB not found. Add to PATH
     pause
     exit /b 1
 )
@@ -31,7 +29,7 @@ if not exist "venv\Scripts\activate.bat" (
     echo [INFO] Creating virtual environment...
     python -m venv venv
     if errorlevel 1 (
-        echo [ERROR] Failed to create virtual environment
+        echo [ERROR] Failed to create venv
         pause
         exit /b 1
     )
