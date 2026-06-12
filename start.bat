@@ -2,15 +2,13 @@
 cd /d "%~dp0"
 
 :: 如果已在 Windows Terminal 中运行，直接执行
-if defined WT_SESSION (
-    goto :run
-)
+if defined WT_SESSION goto :run
 
-:: 尝试用 Windows Terminal 启动
+:: 尝试用 Windows Terminal 启动（直接运行Python，不再嵌套调用自身）
 where wt.exe >nul 2>&1
 if not errorlevel 1 (
     echo [INFO] Launching in Windows Terminal...
-    wt.exe cmd /k "cd /d "%~dp0" && "%~f0""
+    start "" wt.exe cmd /k "cd /d "%~dp0" && python -u wzry_auto.py & pause"
     exit /b
 )
 
