@@ -13,6 +13,7 @@ import math
 import os
 import signal
 import sys
+import shutil
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -29,13 +30,14 @@ GAME_ACT = f"{GAME_PKG}/com.tencent.tmgp.sgame.SGameActivity"
 
 # 模拟器配置
 import shutil as _shutil
-_ADB = _shutil.which("adb") or (
+_ADB = os.environ.get("WZRY_ADB") or _shutil.which("adb") or (
     "/home/lili/android-tools/platform-tools/adb"
     if Path("/home/lili/android-tools/platform-tools/adb").exists()
     else "/tmp/platform-tools/adb" if Path("/tmp/platform-tools/adb").exists() else "adb"
 )
 ADB = _ADB
-DEVICE = os.environ.get("WZRY_DEVICE", "192.168.31.197:39797")
+DEVICE = os.environ.get("WZRY_DEVICE", "")
+DEFAULT_DEVICE = os.environ.get("WZRY_DEFAULT_DEVICE", "")
 UNLOCK_PWD = os.environ.get("WZRY_UNLOCK_PWD", "")  # 锁屏密码，为空则不输入密码
 BASE_W, BASE_H = 1280, 720
 
@@ -53,6 +55,27 @@ STEP6_CONFIG = {
 # 默认步骤6配置
 _step6_cfg = {"center": (160, 486), "angle": 120, "distance": 200, "duration": 1500}
 
+# 模板搜索区域使用归一化坐标 (x1, y1, x2, y2)，减少动态背景误匹配。
+TEMPLATE_ROIS = {
+    "start_game.png": (0.25, 0.55, 0.75, 1.00),
+    "close_popup.png": (0.78, 0.04, 0.95, 0.28),
+    "close_popup_event.png": (0.78, 0.04, 0.95, 0.28),
+    "lainongchang.png": (0.00, 0.55, 0.55, 1.00),
+    "refresh_pos.png": (0.75, 0.70, 1.00, 1.00),
+    "oneclick_farm.png": (0.45, 0.35, 0.80, 0.80),
+    "harvest_continue.png": (0.30, 0.70, 0.70, 1.00),
+}
+
+TEMPLATE_THRESHOLDS = {
+    "start_game.png": 0.75,
+    "close_popup.png": 0.90,
+    "close_popup_event.png": 0.78,
+    "lainongchang.png": 0.75,
+    "refresh_pos.png": 0.60,
+    "oneclick_farm.png": 0.75,
+    "harvest_continue.png": 0.85,
+}
+
 # ============================================================
 # 统计数据
 # ============================================================
@@ -63,7 +86,7 @@ class Stats:
         self.total_exp = 0       # 累计获得经验
         self.total_crops = {}    # 累计收获作物 {作物名: 数量}
         self.start_time = datetime.now()
-    
+
     def add_harvest(self, exp=0, crops=None):
         """记录一次收获"""
         self.harvests += 1
@@ -212,17 +235,40 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time, sav
 # ADB 基础操作
 # ============================================================
 def adb_shell(cmd):
-    """执行ADB shell命令（不使用管道，兼容Windows）"""
-    full_cmd = f"{ADB} -s {DEVICE} shell {cmd}"
-    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+    """执行设备端 shell 命令，不经过主机 shell。"""
+    result = subprocess.run(
+        [ADB, "-s", DEVICE, "shell", cmd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=10,
+    )
     return result.stdout
 
 def adb_shell_root(cmd):
-    """执行ADB root shell命令（单引号包裹防止>被本地shell解析）"""
-    full_cmd = f"{ADB} -s {DEVICE} shell 'su -c \"{cmd}\"'"
-    result = subprocess.run(full_cmd, shell=True, capture_output=True, text=True,
-                           encoding='utf-8', errors='replace', timeout=15)
+    """通过 su 执行设备端命令，重定向只在设备端解析。"""
+    result = subprocess.run(
+        [ADB, "-s", DEVICE, "shell", "su", "-c", cmd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=15,
+    )
     return result.stdout
+
+def adb_command(*args, timeout=10):
+    """执行 ADB 主机命令并返回 CompletedProcess。"""
+    return subprocess.run(
+        [ADB, "-s", DEVICE, *map(str, args)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=timeout,
+    )
+
+def force_stop_game():
+    """退出游戏；所有成功、失败和异常出口统一调用。"""
+    if not DEVICE:
+        return
+    try:
+        adb_shell(f"am force-stop {GAME_PKG}")
+        _reapply_low_brightness()
+    except Exception as exc:
+        print(f"  ⚠️ 退出游戏失败: {exc}")
 
 def wake_and_unlock(password=""):
     """唤醒屏幕并解锁"""
@@ -250,8 +296,20 @@ def wake_and_unlock(password=""):
     adb_shell("input keyevent KEYCODE_WAKEUP")
     time.sleep(1)
     
-    # 上滑显示密码输入框
-    adb_shell("input swipe 540 1800 540 500 300")
+    # 按设备物理尺寸计算解锁手势，兼容手机和模拟器。
+    import re
+    size_out = adb_shell("wm size")
+    match = re.search(r"(\d+)x(\d+)", size_out)
+    if match:
+        width, height = map(int, match.groups())
+        portrait_w, portrait_h = min(width, height), max(width, height)
+    else:
+        portrait_w, portrait_h = 1080, 2400
+    unlock_x = portrait_w // 2
+    adb_shell(
+        f"input swipe {unlock_x} {int(portrait_h * 0.75)} "
+        f"{unlock_x} {int(portrait_h * 0.25)} 300"
+    )
     time.sleep(1)
     
     # 输入密码
@@ -407,8 +465,7 @@ def prompt_brightness_control():
 def screenshot(path=SCREENSHOT_PATH):
     """截图"""
     adb_shell("screencap -p /sdcard/screen.png")
-    subprocess.run(f"{ADB} -s {DEVICE} pull /sdcard/screen.png {path}",
-                   shell=True, capture_output=True, timeout=10)
+    adb_command("pull", "/sdcard/screen.png", path)
     # 自动旋转：竖屏截图 → 横屏
     img = cv2.imread(path)
     if img is not None:
@@ -443,13 +500,34 @@ def swipe(x1, y1, x2, y2, duration_ms=1000):
 # ============================================================
 # 模板匹配
 # ============================================================
-def find_template(template_name, screenshot_path, threshold=0.6):
-    """在截图中查找模板（支持多分辨率）"""
+def _template_scales(tdir, img_w, img_h):
+    """返回有限且可解释的模板尺度，避免把按钮放大到整屏宽。"""
+    if tdir != TEMPLATE_DIR:
+        return [0.90, 0.95, 1.0, 1.05, 1.10]
+
+    predicted = min(img_w / BASE_W, img_h / BASE_H)
+    scales = {0.75, 1.0, 1.25, 1.5, 2.0}
+    scales.update(
+        round(predicted * factor, 3)
+        for factor in (0.85, 0.925, 1.0, 1.075, 1.15)
+    )
+    return sorted(scales)
+
+def find_template(template_name, screenshot_path, threshold=None, roi=None):
+    """在限定区域内多尺度查找模板（分辨率专用模板优先）。"""
     img = cv2.imread(screenshot_path)
     if img is None:
         return None
     
     img_h, img_w = img.shape[:2]
+    threshold = TEMPLATE_THRESHOLDS.get(template_name, 0.6) if threshold is None else threshold
+    roi = TEMPLATE_ROIS.get(template_name) if roi is None else roi
+    if roi:
+        x1, y1 = int(roi[0] * img_w), int(roi[1] * img_h)
+        x2, y2 = int(roi[2] * img_w), int(roi[3] * img_h)
+    else:
+        x1, y1, x2, y2 = 0, 0, img_w, img_h
+    search_img = img[y1:y2, x1:x2]
     
     # 构建模板搜索路径：分辨率专用 > 默认
     template_dirs = []
@@ -472,17 +550,7 @@ def find_template(template_name, screenshot_path, threshold=0.6):
             continue
         
         tmpl_h, tmpl_w = tmpl.shape[:2]
-        tdir_label = "专用" if tdir != TEMPLATE_DIR else "默认"
-        
-        # 多尺度匹配（使用V1/V2的固定比例）
-        scales = [1.0]
-        if tmpl_w > 200:
-            # 大模板：按截图比例缩放
-            scales.append(img_w / tmpl_w)
-        else:
-            # 小模板：使用固定缩放比例
-            for s in [0.5, 0.75, 1.25, 1.5, 2.0]:
-                scales.append(s)
+        scales = _template_scales(tdir, img_w, img_h)
         
         for s in scales:
             if abs(s - 1.0) < 0.01:
@@ -490,19 +558,21 @@ def find_template(template_name, screenshot_path, threshold=0.6):
                 tw, th = tmpl_w, tmpl_h
             else:
                 nw, nh = int(tmpl_w * s), int(tmpl_h * s)
-                if nw > img_w or nh > img_h or nw < 5 or nh < 5:
+                if nw > search_img.shape[1] or nh > search_img.shape[0] or nw < 5 or nh < 5:
                     continue
                 t = cv2.resize(tmpl, (nw, nh))
                 tw, th = nw, nh
             
-            result = cv2.matchTemplate(img, t, cv2.TM_CCOEFF_NORMED)
+            if tw > search_img.shape[1] or th > search_img.shape[0]:
+                continue
+            result = cv2.matchTemplate(search_img, t, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
             if max_val > best_score:
                 best_score = max_val
-                best_loc = max_loc
+                best_loc = (max_loc[0] + x1, max_loc[1] + y1)
                 best_tw, best_th = tw, th
     
-    if not best_loc:
+    if best_loc is None:
         print(f"  ❌ '{template_name}': 模板不存在")
         return None
     
@@ -510,22 +580,67 @@ def find_template(template_name, screenshot_path, threshold=0.6):
         cx = best_loc[0] + best_tw // 2
         cy = best_loc[1] + best_th // 2
         print(f"  ✅ '{template_name}': score={best_score:.3f} @ ({cx},{cy})")
-        return {"x": cx, "y": cy, "score": best_score}
+        return {
+            "x": cx, "y": cy, "score": best_score,
+            "template": template_name, "scale_size": (best_tw, best_th),
+        }
     else:
         print(f"  ❌ '{template_name}': 未匹配 ({best_score:.3f} < {threshold})")
         return None
 
-def has_template(template_name, screenshot_path, threshold=0.6):
+def has_template(template_name, screenshot_path, threshold=None):
     """检查模板是否存在"""
     return find_template(template_name, screenshot_path, threshold) is not None
 
-def click_template(template_name, screenshot_path, threshold=0.6, label=""):
+def click_template(template_name, screenshot_path, threshold=None, label=""):
     """匹配并点击模板"""
     result = find_template(template_name, screenshot_path, threshold)
     if result:
         tap(result["x"], result["y"], label or template_name)
         return True
     return False
+
+def find_any_template(template_names, screenshot_path, thresholds=None):
+    """匹配同一功能的多个模板，返回超过各自阈值的最高分候选。"""
+    best = None
+    thresholds = thresholds or {}
+    for name in template_names:
+        result = find_template(name, screenshot_path, thresholds.get(name))
+        if result and (best is None or result["score"] > best["score"]):
+            best = result
+    return best
+
+def wait_for_any_template(template_names, timeout=60, interval=3, label="页面"):
+    """轮询等待任一目标出现；成功后返回匹配结果。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        screenshot(SCREENSHOT_PATH)
+        result = find_any_template(template_names, SCREENSHOT_PATH)
+        if result:
+            print(f"  ✅ {label}已就绪: {result['template']}")
+            return result
+        remaining = max(0, int(deadline - time.monotonic()))
+        print(f"  ⏳ 等待{label}，剩余 {remaining}秒")
+        time.sleep(min(interval, max(0, deadline - time.monotonic())))
+    return None
+
+def save_diagnostic(step, details=None):
+    """保存失败现场，供游戏更新后离线复现。"""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = SCRIPT_DIR / "diagnostics" / f"{stamp}_{step}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if Path(SCREENSHOT_PATH).exists():
+        shutil.copy2(SCREENSHOT_PATH, output_dir / "screenshot.png")
+    context = {
+        "step": step,
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "device": DEVICE,
+        "details": details or {},
+    }
+    with open(output_dir / "context.json", "w", encoding="utf-8") as file:
+        json.dump(context, file, ensure_ascii=False, indent=2)
+    print(f"  📁 已保存失败现场: {output_dir}")
+    return output_dir
 
 # ============================================================
 # 摇杆操作
@@ -543,12 +658,12 @@ def check_at_initial_position():
     """检查角色是否在初始位置（石盘）"""
     screenshot(SCREENSHOT_PATH)
     # 检查是否有refresh_pos按钮（在初始位置才会显示）
-    return has_template("refresh_pos.png", SCREENSHOT_PATH, 0.5)
+    return has_template("refresh_pos.png", SCREENSHOT_PATH)
 
 def reset_position():
     """刷新站位重置角色位置"""
     print("  🔄 刷新站位...")
-    if click_template("refresh_pos.png", SCREENSHOT_PATH, 0.5, "刷新站位"):
+    if click_template("refresh_pos.png", SCREENSHOT_PATH, label="刷新站位"):
         print("  ⏳ 等待5秒...")
         time.sleep(5)
         return True
@@ -617,8 +732,8 @@ def read_harvest_info(screenshot_path):
         return None
     
     h, w = img.shape[:2]
-    # 收获弹窗通常在屏幕中央区域
-    roi = img[int(h*0.2):int(h*0.8), int(w*0.2):int(w*0.8)]
+    # 覆盖多行奖励卡片；旧范围会截掉第二行的作物名称。
+    roi = img[int(h*0.15):int(h*0.92), int(w*0.15):int(w*0.85)]
     
     try:
         ocr = get_ocr()
@@ -656,32 +771,38 @@ def read_harvest_info(screenshot_path):
     items = []
     for line in result:
         text = line[1]
-        x = line[0][0][0]  # 左上角x坐标
-        y = line[0][0][1]  # 左上角y坐标
+        x = sum(point[0] for point in line[0]) / 4
+        y = sum(point[1] for point in line[0]) / 4
         items.append({"text": text, "x": x, "y": y})
     
     # 按y坐标排序，找数字行和作物名行的配对
-    numbers = []  # [(x, value)]
-    crops_found = []  # [(x, name)]
+    numbers = []  # [{"x", "y", "value", "used"}]
+    crops_found = []  # [{"x", "y", "name"}]
     
     for item in items:
         text = item["text"].strip()
         if text in crop_names:
-            crops_found.append((item["x"], text))
+            crops_found.append({"x": item["x"], "y": item["y"], "name": text})
         elif text.isdigit() and int(text) > 0:
-            numbers.append((item["x"], int(text)))
-    
-    # 配对: 每个作物名找最近的数字（同y坐标或下方）
-    for cx, cname in crops_found:
-        best_num = 0
-        best_dist = float("inf")
-        for nx, nval in numbers:
-            dist = abs(nx - cx)
-            if dist < best_dist:
-                best_dist = dist
-                best_num = nval
-        if best_num > 0:
-            harvest["crops"][cname] = harvest["crops"].get(cname, 0) + best_num
+            numbers.append({
+                "x": item["x"], "y": item["y"],
+                "value": int(text), "used": False,
+            })
+
+    # 每张奖励卡片的数量位于作物名上方。二维配对且每个数字只能使用一次。
+    for crop in sorted(crops_found, key=lambda item: item["y"]):
+        candidates = []
+        for number in numbers:
+            dy = crop["y"] - number["y"]
+            dx = abs(crop["x"] - number["x"])
+            if not number["used"] and 20 <= dy <= 180 and dx <= 140:
+                candidates.append((dx + dy * 0.15, number))
+        if not candidates:
+            continue
+        _, best = min(candidates, key=lambda pair: pair[0])
+        best["used"] = True
+        name = crop["name"]
+        harvest["crops"][name] = harvest["crops"].get(name, 0) + best["value"]
     
     if harvest["exp"] > 0 or harvest["crops"]:
         return harvest
@@ -694,7 +815,9 @@ def step1_check_status():
     """步骤1: 检测APP是否在前台"""
     print("\n[步骤1] 检测状态...")
     
-    out = ""
+    found = False
+    found2 = False
+    found3 = False
     for attempt in range(3):
         # 方法1: 精确匹配ResumedActivity行（不在历史/缓存中误匹配）
         out = adb_shell("dumpsys activity activities")
@@ -726,6 +849,9 @@ def step1_check_status():
                 break
         if found3:
             break
+        # dumpsys 有正常输出且三种方式均未命中，说明游戏确实不在前台。
+        if out.strip() or out2.strip() or out3.strip():
+            break
         print(f"  ⚠️ 检测失败，重试 {attempt+1}/3...")
         time.sleep(2)
     
@@ -747,9 +873,11 @@ def step2_launch_game():
     """步骤2: 启动游戏"""
     print("\n[步骤2] 启动游戏...")
     adb_shell(f"am start -n {GAME_ACT}")
-    print("  ⏳ 等待40秒...")
-    time.sleep(40)
-    return True
+    print("  ⏳ 等待登录页或启动弹窗...")
+    return wait_for_any_template(
+        ["start_game.png", "close_popup.png", "close_popup_event.png"],
+        timeout=60, interval=3, label="游戏启动页",
+    ) is not None
 
 
 # ============================================================
@@ -762,20 +890,20 @@ def step2b_close_startup_popups():
     miss_count = 0
     for i in range(10):  # 最多处理10个弹窗
         screenshot(SCREENSHOT_PATH)
-        result = find_template("close_popup.png", SCREENSHOT_PATH, 0.9)
+        result = find_any_template(
+            ["close_popup.png", "close_popup_event.png"], SCREENSHOT_PATH
+        )
 
         if result:
             x, y = result["x"], result["y"]
-            # 位置校验：弹窗关闭按钮应在屏幕中央区域（x>800, y<200）
-            if x > 800 and y < 200:
-                tap(x, y, "关闭启动弹窗")
-                miss_count = 0  # 重置未匹配计数
-                print("  ⏳ 等待5秒...")
-                time.sleep(5)
-            else:
-                miss_count += 1
-                print(f"  ⚠️ 位置不匹配 ({x},{y})，未匹配 {miss_count}/3")
+            tap(x, y, f"关闭启动弹窗/{result['template']}")
+            miss_count = 0
+            print("  ⏳ 等待5秒...")
+            time.sleep(5)
         else:
+            if find_template("start_game.png", SCREENSHOT_PATH):
+                print("  ✅ 已到登录页，无需继续处理启动弹窗")
+                break
             miss_count += 1
             print(f"  ⚠️ 未找到弹窗，未匹配 {miss_count}/3")
 
@@ -798,16 +926,22 @@ def step3_click_start_game():
         print(f"  尝试 {attempt+1}/5...")
         screenshot(SCREENSHOT_PATH)
         
-        if click_template("start_game.png", SCREENSHOT_PATH, 0.7, "开始游戏"):
-            print("  ⏳ 等待40秒...")
-            time.sleep(40)
-            return True
+        if click_template("start_game.png", SCREENSHOT_PATH, label="开始游戏"):
+            print("  ⏳ 等待大厅...")
+            if wait_for_any_template(
+                ["close_popup.png", "close_popup_event.png", "lainongchang.png"],
+                timeout=90, interval=3, label="大厅",
+            ):
+                return True
+            save_diagnostic("step3_lobby_timeout")
+            return False
         
         if attempt < 4:
             print("  ⏳ 等待5秒...")
             time.sleep(5)
     
     print("  ❌ 连续5次失败，返回步骤1")
+    save_diagnostic("step3_start_game")
     return False
 
 # ============================================================
@@ -820,20 +954,20 @@ def step4_close_popup():
     miss_count = 0
     for i in range(10):  # 最多处理10个弹窗
         screenshot(SCREENSHOT_PATH)
-        result = find_template("close_popup.png", SCREENSHOT_PATH, 0.9)
+        result = find_any_template(
+            ["close_popup.png", "close_popup_event.png"], SCREENSHOT_PATH
+        )
 
         if result:
             x, y = result["x"], result["y"]
-            # 位置校验：弹窗关闭按钮应在屏幕中央区域（x>800, y<200）
-            if x > 800 and y < 200:
-                tap(x, y, "关闭弹窗")
-                miss_count = 0  # 重置未匹配计数
-                print("  ⏳ 等待5秒...")
-                time.sleep(5)
-            else:
-                miss_count += 1
-                print(f"  ⚠️ 位置不匹配 ({x},{y})，未匹配 {miss_count}/3")
+            tap(x, y, f"关闭弹窗/{result['template']}")
+            miss_count = 0
+            print("  ⏳ 等待5秒...")
+            time.sleep(5)
         else:
+            if find_template("lainongchang.png", SCREENSHOT_PATH):
+                print("  ✅ 已进入大厅主页，弹窗处理完毕")
+                break
             miss_count += 1
             print(f"  ⚠️ 未找到弹窗，未匹配 {miss_count}/3")
 
@@ -854,15 +988,20 @@ def step5_enter_farm():
     for attempt in range(10):  # 最多尝试10次
         screenshot(SCREENSHOT_PATH)
 
-        if click_template("lainongchang.png", SCREENSHOT_PATH, 0.6, "进入农场"):
-            print("  ⏳ 等待40秒...")
-            time.sleep(40)
-            return True
+        if click_template("lainongchang.png", SCREENSHOT_PATH, label="进入农场"):
+            print("  ⏳ 等待农场加载...")
+            if wait_for_any_template(
+                ["refresh_pos.png"], timeout=60, interval=3, label="农场"
+            ):
+                return True
+            save_diagnostic("step5_farm_timeout")
+            return False
 
         print(f"  ⏳ 等待5秒... ({attempt+1}/10)")
         time.sleep(5)
 
     print("  ❌ 连续10次未找到进入农场按钮")
+    save_diagnostic("step5_enter_farm")
     return False
 
 # ============================================================
@@ -890,23 +1029,27 @@ def step6_move_to_statue():
 # 步骤7: 一键务农
 # ============================================================
 def step7_oneclick_farm():
-    """步骤7: 一键务农"""
+    """步骤7: 一键务农，返回 (是否成功, 实际点击时间)。"""
     print("\n[步骤7] 一键务农...")
     
     screenshot(SCREENSHOT_PATH)
     
-    if has_template("oneclick_farm.png", SCREENSHOT_PATH, 0.5):
+    if has_template("oneclick_farm.png", SCREENSHOT_PATH):
         print("  ✅ 找到一键务农按钮")
         print("  ⏳ 等待3秒...")
         time.sleep(3)
         
-        click_template("oneclick_farm.png", SCREENSHOT_PATH, 0.5, "一键务农")
+        if not click_template("oneclick_farm.png", SCREENSHOT_PATH, label="一键务农"):
+            return False, None
+        farm_time = datetime.now()
+        print(f"  🕐 一键务农时间: {farm_time.strftime('%H:%M:%S')}")
         print("  ⏳ 等待5秒...")
         time.sleep(5)
-        return True
+        return True, farm_time
     else:
         print("  ❌ 未找到一键务农，返回步骤6")
-        return False
+        save_diagnostic("step7_oneclick")
+        return False, None
 
 # ============================================================
 # 步骤8: 关闭收获弹窗
@@ -919,7 +1062,7 @@ def step8_close_harvest():
     for attempt in range(3):
         screenshot(SCREENSHOT_PATH)
         
-        if has_template("harvest_continue.png", SCREENSHOT_PATH, 0.8):
+        if has_template("harvest_continue.png", SCREENSHOT_PATH):
             print("  ✅ 找到收获弹窗")
             harvested = True
             
@@ -941,7 +1084,7 @@ def step8_close_harvest():
             print("  ⏳ 等待3秒...")
             time.sleep(3)
             
-            click_template("harvest_continue.png", SCREENSHOT_PATH, 0.8, "继续")
+            click_template("harvest_continue.png", SCREENSHOT_PATH, label="继续")
             print("  ⏳ 等待5秒...")
             time.sleep(5)
             return True, harvested
@@ -1068,16 +1211,20 @@ def step10_calculate_wait(maturity_time, result, maturity_dt):
 def check_adb_connection():
     """检查ADB连接状态，未连接则自动连接"""
     print("🔍 检查ADB连接...")
-    result = adb_shell("get-state")
-    if "device" in result:
+    if not DEVICE:
+        print("  ❌ 未选择设备")
+        return False
+    result = adb_command("get-state")
+    if result.returncode == 0 and result.stdout.strip() == "device":
         print(f"  ✅ 设备已连接: {DEVICE}")
         return True
     
     # 自动连接
     print(f"  ⚠️ 设备未连接，正在自动连接: {DEVICE}")
     connect_result = subprocess.run(
-        f"{ADB} connect {DEVICE}", 
-        shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10
+        [ADB, "connect", DEVICE],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=10,
     )
     
     if "connected" in connect_result.stdout:
@@ -1086,6 +1233,39 @@ def check_adb_connection():
     else:
         print(f"  ❌ 自动连接失败: {connect_result.stdout.strip()}")
         return False
+
+def resolve_device():
+    """优先使用环境变量；否则单设备自动选择，多设备要求显式指定。"""
+    global DEVICE
+    if DEVICE:
+        return True
+    try:
+        result = subprocess.run(
+            [ADB, "devices"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=10,
+        )
+        devices = []
+        for line in result.stdout.splitlines()[1:]:
+            fields = line.split()
+            if len(fields) >= 2 and fields[1] == "device":
+                devices.append(fields[0])
+        if len(devices) == 1:
+            DEVICE = devices[0]
+            print(f"  📱 自动选择唯一设备: {DEVICE}")
+            return True
+        if len(devices) > 1:
+            print(f"  ❌ 检测到多个设备: {', '.join(devices)}")
+            print("  请设置 WZRY_DEVICE 指定目标设备")
+            return False
+    except Exception as exc:
+        print(f"  ⚠️ 枚举ADB设备失败: {exc}")
+
+    if DEFAULT_DEVICE:
+        DEVICE = DEFAULT_DEVICE
+        print(f"  📱 未发现在线设备，尝试默认无线设备: {DEVICE}")
+        return True
+    print("  ❌ 未发现在线设备，请先连接 ADB 或设置 WZRY_DEFAULT_DEVICE")
+    return False
 
 def main():
     """主流程"""
@@ -1097,8 +1277,8 @@ def main():
     for (w, h), cfg in STEP6_CONFIG.items():
         print(f"  📐 {w}x{h}: 中心{cfg['center']} {cfg['angle']}° {cfg['distance']}px {cfg['duration']}ms")
     
-    # 启动前检查ADB连接
-    if not check_adb_connection():
+    # 启动前选择并检查ADB连接
+    if not resolve_device() or not check_adb_connection():
         return
     
     # 询问是否降低亮度
@@ -1120,8 +1300,16 @@ def main():
             sx = dev_w / BASE_W
             sy = dev_h / BASE_H
             JOYSTICK_CENTER = (int(160 * sx), int(486 * sy))
-        _step6_cfg = {"center": JOYSTICK_CENTER, "angle": 120, "distance": 200, "duration": 1500}
-        print(f"  🎯 步骤6使用默认配置: 中心{JOYSTICK_CENTER} 角度120° 距离200px 时间1500ms")
+            move_scale = min(sx, sy)
+        else:
+            move_scale = 1.0
+        _step6_cfg = {
+            "center": JOYSTICK_CENTER,
+            "angle": 120,
+            "distance": max(100, int(200 * move_scale)),
+            "duration": 1500,
+        }
+        print(f"  🎯 步骤6使用缩放配置: {_step6_cfg}")
     
     round_num = 0
     while True:
@@ -1135,7 +1323,12 @@ def main():
         step1_check_status()
         
         # 步骤2: 启动游戏
-        step2_launch_game()
+        if not step2_launch_game():
+            print("\n⚠️ 游戏启动页超时，重新开始...")
+            save_diagnostic("step2_launch")
+            force_stop_game()
+            time.sleep(30)
+            continue
 
         # 步骤2b: 关闭启动弹窗
         step2b_close_startup_popups()
@@ -1143,6 +1336,7 @@ def main():
         # 步骤3: 点击开始游戏
         if not step3_click_start_game():
             print("\n⚠️ 步骤3失败，重新开始...")
+            force_stop_game()
             continue
         
         # 步骤4: 关闭弹窗
@@ -1151,23 +1345,26 @@ def main():
         # 步骤5: 进入农场
         if not step5_enter_farm():
             print("\n⚠️ 步骤5失败，重新开始...")
+            force_stop_game()
             continue
         
         # 步骤6: 移动到雕像
         step6_move_to_statue()
         
         # 步骤7: 一键务农
-        if not step7_oneclick_farm():
+        farm_ok, first_water_time = step7_oneclick_farm()
+        if not farm_ok:
             print("\n⚠️ 步骤7失败，返回步骤6...")
             step6_move_to_statue()
-            step7_oneclick_farm()
+            farm_ok, first_water_time = step7_oneclick_farm()
+        if not farm_ok:
+            print("\n❌ 步骤7连续失败，本轮结束")
+            force_stop_game()
+            time.sleep(30)
+            continue
         
         # 步骤8: 关闭收获弹窗
         _, harvested = step8_close_harvest()
-        
-        # 记录一键务农时间（在步骤9移动前）
-        first_water_time = datetime.now()
-        print(f"  🕐 一键务农时间: {first_water_time.strftime('%H:%M:%S')}")
         
         # 步骤9: 移动到土地，读取成熟时间，计算浇水计划
         maturity_time, result, maturity_dt = step9_move_to_farmland(first_water_time, save_if_fresh=harvested)
@@ -1198,6 +1395,7 @@ def run_main():
     except Exception as e:
         print(f"\n\n❌ 发生错误: {e}")
     finally:
+        force_stop_game()
         # 恢复亮度设置
         restore_brightness()
         print("\n👋 脚本已退出")

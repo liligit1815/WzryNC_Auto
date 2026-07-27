@@ -1,6 +1,6 @@
 #!/bin/bash
 # 实时务农监控
-LOG_FILE="/tmp/wzry_run9.log"
+LOG_FILE="${WZRY_LOG_FILE:-/tmp/wzry_run.log}"
 
 echo "=========================================="
 echo "王者荣耀农场实时监控"

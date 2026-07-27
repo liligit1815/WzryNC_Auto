@@ -1,264 +1,256 @@
-# 王者荣耀农场自动化工具 V3
+# 王者荣耀农场自动化工具
 
-自动化完成王者荣耀农场务农：启动游戏 → 进入农场 → 一键务农 → 等待作物成熟 → 自动唤醒继续。
+通过 ADB、OpenCV 模板匹配和 RapidOCR，自动完成王者荣耀农场的启动、务农、成熟时间识别、定时等待与下一轮执行。
 
-## ✨ V3 新功能
+当前支持：
 
-- **多分辨率支持**：自动识别设备分辨率，使用对应模板（1280x720 / 2400x1080）
-- **智能唤醒**：执行时间前2分钟自动唤醒屏幕并解锁
-- **ROOT亮度控制**：支持ROOT权限设置亮度为0，减少烧屏（修复su -c引号解析问题）
-- **作物周期持久化**：自动记录作物周期，避免计算错误
-- **启动弹窗自动关闭**：游戏启动后自动检测并关闭更新弹窗（步骤2b）
+- 安卓实体手机与雷电模拟器
+- Windows、Linux
+- 1280×720、2400×1080，并可按逻辑坐标适配其他分辨率
+- 单设备自动选择，多设备显式指定
+- 普通亮度、ROOT 亮度 0/1、退出时恢复亮度
+- 游戏更新后的多模板、ROI 和有限尺度匹配
+- 失败现场自动保存
 
-## 📁 文件结构
+## 工作流程
 
+```text
+检查设备与游戏状态
+        ↓
+启动王者荣耀并等待登录页
+        ↓
+关闭启动弹窗 → 点击开始游戏
+        ↓
+关闭大厅活动弹窗
+        ↓
+进入王者农场
+        ↓
+刷新站位并移动到雕像
+        ↓
+一键务农（收获 / 播种 / 浇水）
+        ↓
+识别收获信息与成熟时间
+        ↓
+计算下一次浇水时间
+        ↓
+退出游戏并等待唤醒
 ```
-WZRY_Farm/
-├── wzry_auto.py           # 主自动化脚本 (V3)
-├── start.bat              # Windows 一键启动
-├── start.sh               # Linux 一键启动
-├── monitor.sh             # 监控脚本
-├── realtime_monitor.sh    # 实时监控脚本
-├── README.md              # 说明文档
+
+作物周期可能为 5、60、480、960、1920 分钟。完整周期包含四次浇水：种植时、周期的 `1/3`、`2/3` 和 `11/15`。每轮以本次一键务农的真实点击时刻重新计算下一次执行时间。
+
+## 项目结构
+
+```text
+WzryNC_Auto/
+├── wzry_auto.py                 # 主程序
+├── start.bat                    # Windows 一键启动
+├── start.sh                     # Linux 一键启动
+├── monitor.sh                   # Linux 状态检查
+├── realtime_monitor.sh          # Linux 实时日志
+├── requirements.txt
 ├── assets/
-│   ├── templates/         # 默认模板 (1280x720)
-│   │   ├── start_game.png
-│   │   ├── close_popup.png
-│   │   ├── lainongchang.png
-│   │   ├── oneclick_farm.png
-│   │   ├── refresh_pos.png
-│   │   └── harvest_continue.png
-│   ├── templates/2400x1080/  # 1080x2400设备专用模板
-│   └── crop_cycle.json    # 作物周期记录
-├── logs/                  # 日志目录
-└── tmp/                   # 临时文件
+│   ├── crop_cycle.json          # 当前作物周期
+│   ├── screenshots/             # 模板源截图
+│   └── templates/
+│       ├── *.png                # 1280×720 默认模板
+│       └── 2400x1080/*.png      # 2400×1080 专用模板
+├── scripts/
+│   ├── check_requirements.py    # 依赖版本检查
+│   └── run_with_log.py          # 跨平台终端与文件双路日志
+└── tests/
+    └── test_core.py             # 离线核心测试
 ```
 
----
+运行过程中会自动生成：
 
-## 🖥️ Windows 运行指南
+- `assets/current.png`：最近一次设备截图
+- `diagnostics/`：关键步骤失败现场
+- `/tmp/wzry_run.log`：Linux 默认日志
+- `%TEMP%\wzry_run.log`：Windows 默认日志
 
-### 1. 安装 Python 3.11+
+这些文件不会提交到 Git。
 
-从 [python.org](https://www.python.org/downloads/) 下载安装，安装时勾选 **"Add Python to PATH"**。
+## 环境要求
 
-验证：
-```cmd
-python --version
+- Python 3.11–3.13
+- Android platform-tools（ADB）
+- 已开启 USB 调试或无线调试的安卓设备
+- Windows 使用 PowerShell 5+ 完成多实例检查
+- ROOT 亮度模式需要设备已 ROOT
+
+Python 依赖：
+
+```text
+opencv-python
+numpy
+rapidocr-onnxruntime
 ```
 
-> **注意**：Python 3.14+ 在Windows上可能有GBK编码问题，脚本已内置修复。推荐使用 Python 3.11-3.13。
+## Windows 一键启动
 
-### 2. 安装 ADB
+1. 安装 Python，并勾选 `Add Python to PATH`。
+2. 安装 Android platform-tools，并将 ADB 加入 PATH。
+3. 连接手机或启动模拟器：
 
-1. 下载 [platform-tools](https://developer.android.com/tools/releases/platform-tools)
-2. 解压到任意目录（如 `C:\platform-tools`）
-3. 把该目录加到系统 PATH：
-   - 右键「此电脑」→ 属性 → 高级系统设置 → 环境变量
-   - 在「系统变量」中找到 `Path`，编辑，添加 `C:\platform-tools`
-
-验证：
 ```cmd
-adb version
-```
-
-### 3. 连接设备
-
-确保设备开启了**无线调试**，获取 IP 和端口后连接：
-```cmd
-adb connect 192.168.31.197:38983
 adb devices
 ```
 
-### 4. 克隆仓库并安装依赖
+4. 双击 `start.bat`。
+
+PowerShell 中运行：
+
+```powershell
+.\start.bat
+```
+
+启动器会自动：
+
+- 创建或复用 `venv`
+- 检查并安装缺失/过旧的依赖
+- 阻止重复启动
+- 使用 Windows Terminal（可用时）
+- 将日志写入 `%TEMP%\wzry_run.log`
+
+## Linux 一键启动
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+启动器会按以下顺序复用虚拟环境：
+
+1. `WZRY_VENV_DIR`
+2. `.venv`
+3. `venv`
+4. 新建 `.venv`
+
+Linux 状态检查：
+
+```bash
+./monitor.sh
+```
+
+实时查看日志：
+
+```bash
+./realtime_monitor.sh
+```
+
+## 配置环境变量
+
+### 指定设备
+
+只有一个在线设备时会自动选择。多个设备同时在线时必须指定：
+
+Windows：
 
 ```cmd
-git clone https://github.com/liligit1815/WzryNC_Auto.git
-cd WzryNC_Auto
-
-# 创建虚拟环境
-python -m venv venv
-venv\Scripts\activate
-
-# 安装依赖
-pip install opencv-python numpy rapidocr_onnxruntime -i https://mirrors.aliyun.com/pypi/simple/
+set WZRY_DEVICE=192.168.1.100:5555
+start.bat
 ```
 
-如果 `onnxruntime` 安装失败或运行时报 DLL 错误：
-```cmd
-pip install onnxruntime==1.17.0
-```
-同时安装 [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
+Linux：
 
-### 5. 运行脚本
-
-**方式一：一键启动（推荐）**
-
-双击 `start.bat` 即可自动完成环境激活和脚本运行。
-
-> **注意**：如果使用 PowerShell 终端，需输入 `.\start.bat`（CMD终端直接输入 `start.bat` 即可）。
-
-**方式二：手动启动**
-
-```cmd
-venv\Scripts\activate
-python -u wzry_auto.py
-```
-
-### 6. 环境变量配置
-
-```cmd
-# 设备地址
-set WZRY_DEVICE=192.168.31.197:38983
-
-# 锁屏密码（可选）
-set WZRY_UNLOCK_PWD=1234
-
-python -u wzry_auto.py
-```
-
----
-
-## 🐧 Linux 运行指南
-
-### 1. 连接设备
 ```bash
-adb connect 192.168.31.197:38983
+WZRY_DEVICE=192.168.1.100:5555 ./start.sh
 ```
 
-### 2. 一键启动
+### 其他配置
+
+| 变量 | 作用 |
+|---|---|
+| `WZRY_DEVICE` | ADB 设备序列号、IP 或模拟器地址 |
+| `WZRY_DEFAULT_DEVICE` | 没有在线设备时尝试连接的默认无线设备 |
+| `WZRY_ADB` | 自定义 ADB 可执行文件路径 |
+| `WZRY_VENV_DIR` | 自定义虚拟环境目录 |
+| `WZRY_LOG_FILE` | 自定义日志路径 |
+| `WZRY_UNLOCK_PWD` | 锁屏密码；无密码时留空 |
+| `PYTHON_BIN` | Linux 创建虚拟环境所用的 Python |
+
+## 亮度模式
+
+启动时可以选择：
+
+```text
+Y - 普通模式，关闭自动亮度并设置为 1
+R - ROOT 模式，将背光节点设置为 0
+1 - ROOT 模式，将背光节点设置为 1
+N - 不修改亮度
+```
+
+正常退出、异常和 Ctrl+C 中断都会尝试退出游戏并恢复原始亮度。
+
+## 模板匹配
+
+当前主要阈值：
+
+| 目标 | 阈值 |
+|---|---:|
+| 开始游戏 | 0.75 |
+| 王者农场入口 | 0.75 |
+| 常规弹窗关闭 | 0.90 |
+| 赛事弹窗关闭 | 0.78 |
+| 刷新站位 | 0.60 |
+| 一键务农 | 0.75 |
+| 收获继续 | 0.85 |
+
+匹配不只依赖分数，还会限制搜索区域和模板尺度，避免将大厅图标误认为弹窗关闭按钮。游戏更新导致 UI 变化时，应优先根据失败截图更新模板，不建议直接大幅降低阈值。
+
+## 故障诊断
+
+关键步骤失败时会创建：
+
+```text
+diagnostics/YYYYMMDD_HHMMSS_step_name/
+├── screenshot.png
+└── context.json
+```
+
+常用检查：
+
 ```bash
-cd WZRY_Farm
-bash start.sh
-```
-
-### 3. 或手动启动
-```bash
-cd WZRY_Farm
-.venv/bin/python3 -u wzry_auto.py
-```
-
-### 4. 后台运行
-```bash
-.venv/bin/python3 -u wzry_auto.py > /tmp/wzry_run.log 2>&1 &
-```
-
----
-
-## 💡 启动选项
-
-脚本启动时会提示：
-
-```
-============================================================
-💡 是否降低屏幕亮度以减少烧屏风险？
-============================================================
-  Y - 关闭自动亮度，亮度降至最低(1)
-  R - 使用ROOT权限，亮度设为0（突破厂商限制）
-  N - 保持当前亮度设置
-============================================================
-请选择 (Y/R/N):
-```
-
-- **Y**：普通模式，亮度降至1
-- **R**：ROOT模式，亮度设为0（需要设备已ROOT）
-- **N**：不修改亮度
-
-脚本退出时会自动恢复原始亮度设置。
-
----
-
-## 📊 监控命令
-
-### 查看日志
-```bash
-# 查看最近日志
+adb devices -l
 tail -100 /tmp/wzry_run.log
-
-# 实时监控
-tail -f /tmp/wzry_run.log
-
-# 查看错误
-grep "❌" /tmp/wzry_run.log
+./monitor.sh
 ```
 
-### 查看脚本状态
+如果作物周期记录错误，可删除：
+
+```text
+assets/crop_cycle.json
+```
+
+脚本会在下次确认新种植时重新计算并保存周期。
+
+## 测试
+
+Linux：
+
 ```bash
-# 检查脚本是否运行
-pgrep -f wzry_auto.py
-
-# 停止脚本
-pkill -f wzry_auto.py
+venv/bin/python -m unittest discover -s tests -v
+bash -n start.sh monitor.sh realtime_monitor.sh
 ```
 
----
+Windows：
 
-## 📝 工作流程
-
-| 步骤 | 操作 | 说明 |
-|------|------|------|
-| 1 | 检测状态 | 检测游戏是否在前台，是则退出重启 |
-| 2 | 启动游戏 | 启动王者荣耀，等待40秒 |
-| 2b | 关闭启动弹窗 | 关闭游戏启动后的更新/活动弹窗 |
-| 3 | 点击开始游戏 | 匹配并点击登录界面的开始按钮 |
-| 4 | 关闭弹窗 | 关闭活动/公告弹窗 |
-| 5 | 进入农场 | 点击"来农场干农活"按钮 |
-| 6 | 移动到雕像 | 刷新站位 + 摇杆移动到雕像位置 |
-| 7 | 一键务农 | 点击一键务农按钮 |
-| 8 | 关闭收获弹窗 | 处理收获后的弹窗，记录作物周期 |
-| 9 | 移动到土地 | 摇杆移动到农田，OCR读取成熟时间 |
-| 10 | 计算等待 | 计算下次执行时间，退出游戏等待唤醒 |
-
----
-
-## ⚠️ 注意事项
-
-1. **多分辨率支持**：脚本自动识别设备分辨率，优先使用专用模板
-2. **ADB 连接不稳定**：脚本启动时会自动重连，3次重试机制
-3. **截图自动旋转**：竖屏截图会自动旋转为横屏
-4. **脚本运行必须加 `-u` 参数**：否则后台模式无输出
-5. **模板匹配阈值**：`start_game` ≥ 0.7，`close_popup` ≥ 0.9，其他 ≥ 0.5
-6. **ROOT亮度**：小米设备亮度范围0-2047，脚本通过`/sys/class/backlight/panel0-backlight/brightness`直接写入
-7. **ADB路径**：脚本自动检测`~/android-tools/platform-tools/adb`或`/tmp/platform-tools/adb`
-
----
-
-## 🔧 常见问题
-
-### Q: 脚本运行无输出
-A: 确保使用 `-u` 参数：
 ```cmd
-python -u wzry_auto.py
-```
-或直接双击 `start.bat`。
-
-### Q: Windows 报 UnicodeDecodeError (gbk codec)
-A: 脚本已内置UTF-8编码修复。如仍报错，确认使用最新版本代码，或手动设置环境变量：
-```cmd
-set PYTHONIOENCODING=utf-8
-python -u wzry_auto.py
+venv\Scripts\python -m unittest discover -s tests -v
 ```
 
-### Q: 步骤3匹配失败（score < 0.7）
-A: 检查设备画面是否显示了"开始游戏"按钮。可能原因：
-- 游戏还在加载中（增加等待时间）
-- 模板与设备分辨率不匹配
-- 游戏卡在更新/公告页面
+离线测试不会启动游戏或操作手机。实机验证结束后应确认游戏进程已退出：
 
-### Q: 作物周期计算错误
-A: 脚本会在首次种植时自动记录周期。如果计算错误，删除 `assets/crop_cycle.json` 后重新运行。
-
-### Q: onnxruntime DLL 错误
-A: 安装 Visual C++ Redistributable 并降级 onnxruntime：
-```cmd
-pip install onnxruntime==1.17.0
+```bash
+adb -s DEVICE shell pidof com.tencent.tmgp.sgame
 ```
 
-### Q: ROOT模式亮度未生效
-A: 检查设备是否已ROOT，并确认 `/sys/class/backlight/` 路径存在。
+无输出表示游戏进程不存在。
 
----
+## 注意事项
 
-## 📞 联系
-
-如有问题，请查看日志文件或运行监控脚本查看状态。
+- 游戏更新、活动弹窗和主题皮肤都可能改变模板匹配结果。
+- 不要同时运行多个脚本操作同一设备。
+- 无法确认页面状态时，脚本会保存现场并退出本轮，而不是盲目点击。
+- `assets/screenshots/` 是后续模板适配的重要源素材，请勿当作运行时缓存删除。
+- ROOT 背光节点具有设备差异，使用前应在目标设备上验证。
