@@ -10,8 +10,17 @@ assets/current.png
 assets/after_oneclick.png
 assets/no_oneclick.png
 assets/maturity_*.png
+assets/farm_state.json
 diagnostics/
+android-ocr-samples/
 
 # IDE
 .vscode/
 .idea/
+
+# Local Android build toolchain and machine-specific SDK path
+.android-tools/
+android-app/local.properties
+android-app/.gradle/
+android-app/.kotlin/
+android-app/**/build/

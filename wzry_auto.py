@@ -12,8 +12,10 @@ import time
 import math
 import os
 import signal
+import shlex
 import sys
 import shutil
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -37,7 +39,7 @@ _ADB = os.environ.get("WZRY_ADB") or _shutil.which("adb") or (
 )
 ADB = _ADB
 DEVICE = os.environ.get("WZRY_DEVICE", "")
-DEFAULT_DEVICE = os.environ.get("WZRY_DEFAULT_DEVICE", "")
+DEFAULT_DEVICE = os.environ.get("WZRY_DEFAULT_DEVICE", "192.168.31.204:38041")
 UNLOCK_PWD = os.environ.get("WZRY_UNLOCK_PWD", "")  # 锁屏密码，为空则不输入密码
 BASE_W, BASE_H = 1280, 720
 
@@ -131,6 +133,7 @@ import json
 
 # 存储文件路径
 CYCLE_FILE = str(ASSETS_DIR / "crop_cycle.json")
+FARM_STATE_FILE = ASSETS_DIR / "farm_state.json"
 
 def save_crop_cycle(crop_name, cycle_min):
     """保存作物周期到文件"""
@@ -163,6 +166,30 @@ def clear_crop_cycle():
     if os.path.exists(CYCLE_FILE):
         os.remove(CYCLE_FILE)
         print("  🗑️ 已清除旧作物周期记录")
+
+def load_farm_state():
+    """读取当前种植批次；损坏或不完整的数据按无状态处理。"""
+    try:
+        with FARM_STATE_FILE.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        data["batch_started_at"] = datetime.fromisoformat(data["batch_started_at"])
+        return data
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+def save_farm_state(batch_started_at, cycle_min, maturity_at=None):
+    data = {
+        "batch_started_at": batch_started_at.isoformat(timespec="seconds"),
+        "cycle_min": int(cycle_min),
+        "observed_maturity_at": (
+            maturity_at.isoformat(timespec="seconds") if maturity_at else None
+        ),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    temp_path = FARM_STATE_FILE.with_suffix(".tmp")
+    with temp_path.open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+    temp_path.replace(FARM_STATE_FILE)
 
 def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time, save_if_fresh=False):
     """
@@ -209,15 +236,35 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time, sav
     
     cycle_hour = cycle_min // 60
     
-    # 计算完美浇水时间点（从第一次浇水开始算）
+    # 新种植时记录批次起点；后续轮次必须沿用它，不能把每次点击都
+    # 重新解释成第一次浇水。
+    state = load_farm_state()
+    if save_if_fresh or not state or state.get("cycle_min") != cycle_min:
+        batch_started_at = first_water_time
+        save_farm_state(batch_started_at, cycle_min, show_mature_time)
+        print(f"  🌱 记录种植批次起点：{batch_started_at.strftime(time_format)}")
+    else:
+        batch_started_at = state["batch_started_at"]
+        print(f"  📌 沿用种植批次起点：{batch_started_at.strftime(time_format)}")
+
+    # 计算完美浇水时间点（从批次第一次浇水开始算）
     water2_rel = cycle_min / 3
     water3_rel = cycle_min * 2 / 3
     water4_rel = cycle_min * 11 / 15  # 第四次 = 完美成熟
     
     # 转换为真实时间
-    water2_time = first_water_time + timedelta(minutes=water2_rel)
-    water3_time = first_water_time + timedelta(minutes=water3_rel)
-    water4_time = first_water_time + timedelta(minutes=water4_rel)
+    water2_time = batch_started_at + timedelta(minutes=water2_rel)
+    water3_time = batch_started_at + timedelta(minutes=water3_rel)
+    water4_time = batch_started_at + timedelta(minutes=water4_rel)
+    now = datetime.now()
+    next_watering = next(
+        (
+            candidate
+            for candidate in (water2_time, water3_time, water4_time)
+            if candidate > now and candidate < show_mature_time
+        ),
+        None,
+    )
     
     print(f"  🌱 作物原始周期：{cycle_hour} 小时（{cycle_min} 分钟）")
     print(f"  💧 第二次完美浇水时间：{water2_time.strftime(time_format)}")
@@ -228,37 +275,69 @@ def calculate_plant_cycle_and_water_time(first_water_time, show_mature_time, sav
         "plant_cycle_min": cycle_min,
         "water2": water2_time,
         "water3": water3_time,
-        "mature_time": water4_time
+        "mature_time": water4_time,
+        "next_watering": next_watering,
     }
 
 # ============================================================
 # ADB 基础操作
 # ============================================================
-def adb_shell(cmd):
+def _run_adb(args, timeout=10, retries=1):
+    """执行ADB并校验结果；瞬时断线时进行一次有限重试。"""
+    last_error = ""
+    for attempt in range(retries + 1):
+        try:
+            result = subprocess.run(
+                [ADB, "-s", DEVICE, *args],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            last_error = str(exc)
+        else:
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            disconnected = any(
+                marker in combined
+                for marker in (
+                    "device offline", "device not found", "no devices",
+                    "closed", "cannot connect",
+                )
+            )
+            if result.returncode == 0 and not disconnected:
+                return result
+            last_error = (result.stderr or result.stdout).strip()
+        if attempt < retries:
+            print(f"  ⚠️ ADB操作失败，正在重试: {last_error}")
+            if DEVICE and ":" in DEVICE:
+                try:
+                    subprocess.run(
+                        [ADB, "connect", DEVICE],
+                        capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=10,
+                    )
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            time.sleep(1)
+    raise RuntimeError(f"ADB操作失败: {last_error or '未知错误'}")
+
+def adb_shell(cmd, timeout=10, retries=1):
     """执行设备端 shell 命令，不经过主机 shell。"""
-    result = subprocess.run(
-        [ADB, "-s", DEVICE, "shell", cmd],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=10,
-    )
-    return result.stdout
+    return _run_adb(
+        ["shell", cmd], timeout=timeout, retries=retries
+    ).stdout
 
 def adb_shell_root(cmd):
     """通过 su 执行设备端命令，重定向只在设备端解析。"""
-    result = subprocess.run(
-        [ADB, "-s", DEVICE, "shell", "su", "-c", cmd],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=15,
-    )
-    return result.stdout
+    # adb shell 的多个参数会在设备端重新拼接；若直接传
+    # ["su", "-c", "echo 1 > ..."]，部分 adb/su 组合会丢失命令边界，
+    # 导致重定向由普通 shell 执行。把整条远端命令作为一个参数，并
+    # 显式引用 su 的命令字符串，确保 ">" 也运行在 root 上下文中。
+    remote_cmd = f"su -c {shlex.quote(cmd)}"
+    return _run_adb(["shell", remote_cmd], timeout=15).stdout
 
 def adb_command(*args, timeout=10):
     """执行 ADB 主机命令并返回 CompletedProcess。"""
-    return subprocess.run(
-        [ADB, "-s", DEVICE, *map(str, args)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout,
-    )
+    return _run_adb(list(map(str, args)), timeout=timeout)
 
 def force_stop_game():
     """退出游戏；所有成功、失败和异常出口统一调用。"""
@@ -406,30 +485,59 @@ def set_brightness_one_root():
             print(f"    ⚠️ 验证失败，当前亮度: {verify.strip()}")
 
 def restore_brightness():
-    """恢复原始亮度设置"""
+    """尽力恢复原始亮度；退出清理失败不得覆盖主流程异常。"""
     global _original_brightness, _original_auto_brightness, _brightness_mode
     
     if _original_brightness is None:
         return
     
     print("  🔆 恢复亮度设置...")
-    
-    # 如果使用了ROOT权限设置亮度，先尝试恢复节点
-    if _brightness_mode in ('root_zero', 'root_one'):
-        # 尝试恢复亮度节点
-        adb_shell_root(f"echo {_original_brightness} > /sys/class/backlight/panel0-backlight/brightness")
-        adb_shell_root(f"echo {_original_brightness} > /sys/class/backlight/lcd-backlight/brightness")
-    
-    # 恢复亮度值
-    adb_shell(f"settings put system screen_brightness {_original_brightness}")
-    # 恢复自动亮度设置
-    adb_shell(f"settings put system screen_brightness_mode {_original_auto_brightness}")
-    print(f"  ✅ 已恢复亮度: {_original_brightness}/255, 自动亮度: {'开启' if _original_auto_brightness else '关闭'}")
-    
-    # 清空全局变量
-    _original_brightness = None
-    _original_auto_brightness = None
-    _brightness_mode = None
+
+    errors = []
+    try:
+        # 设备的背光节点名称并不统一。只写实际存在的节点，避免固定
+        # 尝试 lcd-backlight 在部分设备上产生 No such file 异常。
+        if _brightness_mode in ('root_zero', 'root_one'):
+            value = int(_original_brightness)
+            try:
+                adb_shell_root(
+                    "for node in /sys/class/backlight/*/brightness; do "
+                    f"[ -e \"$node\" ] && echo {value} > \"$node\"; "
+                    "done"
+                )
+            except Exception as exc:
+                errors.append(f"背光节点恢复失败: {exc}")
+
+        try:
+            adb_shell(
+                f"settings put system screen_brightness "
+                f"{int(_original_brightness)}"
+            )
+        except Exception as exc:
+            errors.append(f"系统亮度恢复失败: {exc}")
+
+        try:
+            adb_shell(
+                f"settings put system screen_brightness_mode "
+                f"{int(_original_auto_brightness)}"
+            )
+        except Exception as exc:
+            errors.append(f"自动亮度模式恢复失败: {exc}")
+
+        if errors:
+            for error in errors:
+                print(f"  ⚠️ {error}")
+            print("  ⚠️ 亮度未能完全恢复，请检查设备当前亮度")
+        else:
+            print(
+                f"  ✅ 已恢复亮度: {_original_brightness}/255, "
+                f"自动亮度: "
+                f"{'开启' if _original_auto_brightness else '关闭'}"
+            )
+    finally:
+        _original_brightness = None
+        _original_auto_brightness = None
+        _brightness_mode = None
 
 def prompt_brightness_control():
     """询问用户是否降低亮度"""
@@ -450,12 +558,24 @@ def prompt_brightness_control():
             return 'low'
         elif choice in ['R', 'ROOT']:
             get_brightness_settings()
-            set_brightness_zero_root()
-            return 'root_zero'
+            try:
+                set_brightness_zero_root()
+                return 'root_zero'
+            except RuntimeError as exc:
+                print(f"  ⚠️ ROOT亮度设置失败: {exc}")
+                print("  ↪️ 自动改用普通最低亮度，自动化任务将继续")
+                set_brightness_low()
+                return 'low'
         elif choice == '1':
             get_brightness_settings()
-            set_brightness_one_root()
-            return 'root_one'
+            try:
+                set_brightness_one_root()
+                return 'root_one'
+            except RuntimeError as exc:
+                print(f"  ⚠️ ROOT亮度设置失败: {exc}")
+                print("  ↪️ 自动改用普通最低亮度，自动化任务将继续")
+                set_brightness_low()
+                return 'low'
         elif choice in ['N', 'NO']:
             print("  ℹ️ 保持当前亮度设置")
             return None
@@ -463,16 +583,41 @@ def prompt_brightness_control():
             print("  ⚠️ 请输入 Y、R、1 或 N")
 
 def screenshot(path=SCREENSHOT_PATH):
-    """截图"""
-    adb_shell("screencap -p /sdcard/screen.png")
-    adb_command("pull", "/sdcard/screen.png", path)
-    # 自动旋转：竖屏截图 → 横屏
-    img = cv2.imread(path)
-    if img is not None:
+    """可靠截图：校验新文件后原子替换，绝不复用旧截图。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # 游戏渲染繁忙或无线 ADB 抖动时，设备端 screencap 偶尔会超过
+    # 通用命令的 10 秒限制。截图使用独立超时并允许额外一次重试。
+    adb_shell(
+        "screencap -p /sdcard/screen.png", timeout=30, retries=2
+    )
+    fd, temp_name = tempfile.mkstemp(
+        prefix=".wzry_screen_", suffix=".png", dir=str(target.parent)
+    )
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        result = adb_command(
+            "pull", "/sdcard/screen.png", str(temp_path), timeout=20
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"截图拉取失败: {(result.stderr or result.stdout).strip()}"
+            )
+        img = cv2.imread(str(temp_path))
+        if img is None or img.size == 0:
+            raise RuntimeError("截图文件无法解码")
         h, w = img.shape[:2]
+        if min(h, w) < 480:
+            raise RuntimeError(f"截图分辨率异常: {w}x{h}")
         if h > w:
             img = cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-            cv2.imwrite(path, img)
+            if not cv2.imwrite(str(temp_path), img):
+                raise RuntimeError("旋转截图写入失败")
+        temp_path.replace(target)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
     return path
 
 def detect_resolution():
@@ -492,10 +637,12 @@ def tap(x, y, label=""):
     if label:
         print(f"  👆 tap ({x}, {y}) [{label}]")
     adb_shell(f"input tap {x} {y}")
+    return True
 
 def swipe(x1, y1, x2, y2, duration_ms=1000):
     """滑动"""
     adb_shell(f"input swipe {x1} {y1} {x2} {y2} {duration_ms}")
+    return True
 
 # ============================================================
 # 模板匹配
@@ -666,7 +813,8 @@ def reset_position():
     if click_template("refresh_pos.png", SCREENSHOT_PATH, label="刷新站位"):
         print("  ⏳ 等待5秒...")
         time.sleep(5)
-        return True
+        screenshot(SCREENSHOT_PATH)
+        return has_template("refresh_pos.png", SCREENSHOT_PATH)
     return False
 
 # ============================================================
@@ -1016,14 +1164,23 @@ def step6_move_to_statue():
         print("  ✅ 在初始位置")
     else:
         print("  🔄 不在初始位置，刷新站位...")
-        reset_position()
+        if not reset_position():
+            print("  ❌ 刷新站位失败，停止本次移动")
+            save_diagnostic("step6_reset_position")
+            return False
     
     # 使用分辨率专属配置或默认参数
     cfg = _step6_cfg
     move_joystick(cfg["angle"], cfg["distance"], cfg["duration"], center=cfg["center"])
     print(f"  ⏳ 等待移动...")
     time.sleep(5)
-    return True
+    screenshot(SCREENSHOT_PATH)
+    if has_template("oneclick_farm.png", SCREENSHOT_PATH):
+        print("  ✅ 已到达雕像，一键务农按钮可用")
+        return True
+    print("  ❌ 移动后未找到一键务农按钮")
+    save_diagnostic("step6_arrival")
+    return False
 
 # ============================================================
 # 步骤7: 一键务农
@@ -1038,7 +1195,9 @@ def step7_oneclick_farm():
         print("  ✅ 找到一键务农按钮")
         print("  ⏳ 等待3秒...")
         time.sleep(3)
-        
+
+        # 动画或网络延迟期间按钮可能已经变化，必须使用新截图点击。
+        screenshot(SCREENSHOT_PATH)
         if not click_template("oneclick_farm.png", SCREENSHOT_PATH, label="一键务农"):
             return False, None
         farm_time = datetime.now()
@@ -1083,10 +1242,17 @@ def step8_close_harvest():
             
             print("  ⏳ 等待3秒...")
             time.sleep(3)
-            
+
+            # 点击必须基于最新画面，避免使用三秒前的旧坐标。
+            screenshot(SCREENSHOT_PATH)
             click_template("harvest_continue.png", SCREENSHOT_PATH, label="继续")
             print("  ⏳ 等待5秒...")
             time.sleep(5)
+            screenshot(SCREENSHOT_PATH)
+            if has_template("harvest_continue.png", SCREENSHOT_PATH):
+                print("  ❌ 收获弹窗点击后仍存在")
+                save_diagnostic("step8_harvest_not_closed")
+                return False, harvested
             return True, harvested
         else:
             print(f"  ⚠️ 未找到收获弹窗，等待3秒后重试 ({attempt+1}/3)")
@@ -1169,8 +1335,8 @@ def step10_calculate_wait(maturity_time, result, maturity_dt):
     reason = ""
     
     if result and maturity_dt:
-        # 获取下次浇水时间（water2）
-        next_watering = result.get("water2")
+        # 从原始种植批次选择尚未执行的最近节点。
+        next_watering = result.get("next_watering")
         
         if next_watering and next_watering < maturity_dt:
             wake_time = next_watering
@@ -1349,14 +1515,18 @@ def main():
             continue
         
         # 步骤6: 移动到雕像
-        step6_move_to_statue()
+        if not step6_move_to_statue():
+            print("\n⚠️ 步骤6失败，重新开始...")
+            force_stop_game()
+            time.sleep(30)
+            continue
         
         # 步骤7: 一键务农
         farm_ok, first_water_time = step7_oneclick_farm()
         if not farm_ok:
             print("\n⚠️ 步骤7失败，返回步骤6...")
-            step6_move_to_statue()
-            farm_ok, first_water_time = step7_oneclick_farm()
+            if step6_move_to_statue():
+                farm_ok, first_water_time = step7_oneclick_farm()
         if not farm_ok:
             print("\n❌ 步骤7连续失败，本轮结束")
             force_stop_game()
