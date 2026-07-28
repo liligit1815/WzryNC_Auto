@@ -52,6 +52,7 @@ JOYSTICK_RADIUS = 200
 STEP6_CONFIG = {
     (1280, 720): {"center": (160, 486), "angle": 120, "distance": 200, "duration": 1500},
     (2400, 1080): {"center": (430, 755), "angle": 120, "distance": 250, "duration": 1500},
+    (2560, 1600): {"center": (385, 1165), "angle": 120, "distance": 370, "duration": 1500},
 }
 
 # 默认步骤6配置
@@ -60,8 +61,8 @@ _step6_cfg = {"center": (160, 486), "angle": 120, "distance": 200, "duration": 1
 # 模板搜索区域使用归一化坐标 (x1, y1, x2, y2)，减少动态背景误匹配。
 TEMPLATE_ROIS = {
     "start_game.png": (0.25, 0.55, 0.75, 1.00),
-    "close_popup.png": (0.78, 0.04, 0.95, 0.28),
-    "close_popup_event.png": (0.78, 0.04, 0.95, 0.28),
+    "close_popup.png": (0.78, 0.04, 1.0, 0.28),
+    "close_popup_event.png": (0.78, 0.04, 1.0, 0.28),
     "lainongchang.png": (0.00, 0.55, 0.55, 1.00),
     "refresh_pos.png": (0.75, 0.70, 1.00, 1.00),
     "oneclick_farm.png": (0.45, 0.35, 0.80, 0.80),

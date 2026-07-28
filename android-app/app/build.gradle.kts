@@ -1,16 +1,30 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseSigningPropertiesFile = file(
+    providers.gradleProperty("wzryReleaseSigningProperties")
+        .orElse(providers.environmentVariable("WZRY_RELEASE_SIGNING_PROPERTIES"))
+        .orElse("${System.getProperty("user.home")}/.android-keys/wzryncauto-release.properties")
+        .get(),
+)
+val releaseSigningProperties = Properties().apply {
+    if (releaseSigningPropertiesFile.isFile) {
+        releaseSigningPropertiesFile.inputStream().use(::load)
+    }
+}
+
 android {
-    namespace = "com.lili.wzryfarm"
+    namespace = "com.lispace.wzryncauto"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
 
     defaultConfig {
-        applicationId = "com.lili.wzryfarm"
+        applicationId = "com.lispace.wzryncauto"
         minSdk = 28
         targetSdk = 35
         versionCode = 1
@@ -23,8 +37,22 @@ android {
         }
     }
 
+    signingConfigs {
+        if (releaseSigningPropertiesFile.isFile) {
+            create("release") {
+                storeFile = file(requireNotNull(releaseSigningProperties.getProperty("storeFile")))
+                storePassword = requireNotNull(releaseSigningProperties.getProperty("storePassword"))
+                keyAlias = requireNotNull(releaseSigningProperties.getProperty("keyAlias"))
+                keyPassword = requireNotNull(releaseSigningProperties.getProperty("keyPassword"))
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseSigningPropertiesFile.isFile) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -49,6 +77,16 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+    }
+}
+
+tasks.matching {
+    it.name.contains("Release", ignoreCase = true)
+}.configureEach {
+    doFirst {
+        check(releaseSigningPropertiesFile.isFile) {
+            "缺少正式签名配置：${releaseSigningPropertiesFile.absolutePath}"
+        }
     }
 }
 
