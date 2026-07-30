@@ -37,10 +37,26 @@ class OpenCvTemplateMatcher(
         templateName: String,
         screenshotId: String = UUID.randomUUID().toString(),
     ): Result<TemplateMatch> = runCatching {
-        val screenshot = decodeColor(screenshotPng)
+        val screenshot = decode(screenshotPng, Imgcodecs.IMREAD_GRAYSCALE)
         check(!screenshot.empty()) { "Screenshot cannot be decoded" }
         try {
             matchMat(screenshot, templateName, screenshotId)
+        } finally {
+            screenshot.release()
+        }
+    }
+
+    fun matchAll(
+        screenshotBytes: ByteArray,
+        templateNames: List<String>,
+        screenshotId: String = UUID.randomUUID().toString(),
+    ): Result<Map<String, TemplateMatch>> = runCatching {
+        val screenshot = decode(screenshotBytes, Imgcodecs.IMREAD_GRAYSCALE)
+        check(!screenshot.empty()) { "Screenshot cannot be decoded" }
+        try {
+            templateNames.distinct().associateWith { name ->
+                matchMat(screenshot, name, screenshotId)
+            }
         } finally {
             screenshot.release()
         }
@@ -98,10 +114,13 @@ class OpenCvTemplateMatcher(
             var bestScale = 1.0
 
             templateCandidates(templateName, width, height).forEach { candidate ->
-                val template = decodeColor(candidate.bytes)
+                if (bestScore >= spec.threshold) return@forEach
+                val template = decode(candidate.bytes, Imgcodecs.IMREAD_GRAYSCALE)
                 try {
                     TemplateCatalog.scales(width, height, candidate.resolutionSpecific)
+                        .sortedBy { kotlin.math.abs(it - 1.0) }
                         .forEach { scale ->
+                            if (bestScore >= spec.threshold) return@forEach
                             val scaled = resize(template, scale)
                             try {
                                 if (scaled.cols() < 5 || scaled.rows() < 5 ||
@@ -179,9 +198,13 @@ class OpenCvTemplateMatcher(
         runCatching { assets.open(path).use { it.readBytes() } }.getOrNull()
 
     private fun decodeColor(bytes: ByteArray): Mat {
+        return decode(bytes, Imgcodecs.IMREAD_COLOR)
+    }
+
+    private fun decode(bytes: ByteArray, mode: Int): Mat {
         val encoded = MatOfByte(*bytes)
         return try {
-            Imgcodecs.imdecode(encoded, Imgcodecs.IMREAD_COLOR)
+            Imgcodecs.imdecode(encoded, mode)
         } finally {
             encoded.release()
         }

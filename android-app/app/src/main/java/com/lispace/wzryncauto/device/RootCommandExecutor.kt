@@ -87,7 +87,12 @@ class RootCommandExecutor {
     }
 
     private fun streamCopyThread(name: String, action: () -> Unit) =
-        Thread(action, name).apply {
+        Thread({
+            // Destroying a process closes its pipes while these daemon readers
+            // may still be blocked. That is an expected cancellation path and
+            // must never escape as an uncaught exception that kills the app.
+            runCatching(action)
+        }, name).apply {
             isDaemon = true
             start()
         }

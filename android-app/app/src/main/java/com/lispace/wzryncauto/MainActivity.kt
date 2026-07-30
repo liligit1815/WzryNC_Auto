@@ -1,7 +1,9 @@
 package com.lispace.wzryncauto
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -48,6 +50,14 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { }
+    private val screenCapturePermission = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        startOverlayService(
+            resultCode = result.resultCode,
+            projectionData = result.data,
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,9 +143,20 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        screenCapturePermission.launch(manager.createScreenCaptureIntent())
+    }
+
+    private fun startOverlayService(resultCode: Int, projectionData: Intent?) {
         ContextCompat.startForegroundService(
             this,
-            Intent(this, OverlayService::class.java),
+            Intent(this, OverlayService::class.java).apply {
+                if (resultCode == Activity.RESULT_OK && projectionData != null) {
+                    action = OverlayService.ACTION_ENABLE_FRAME_STREAM
+                    putExtra(OverlayService.EXTRA_PROJECTION_RESULT_CODE, resultCode)
+                    putExtra(OverlayService.EXTRA_PROJECTION_DATA, projectionData)
+                }
+            },
         )
         moveTaskToBack(true)
     }

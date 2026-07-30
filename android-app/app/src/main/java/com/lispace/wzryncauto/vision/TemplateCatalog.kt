@@ -24,6 +24,11 @@ object TemplateCatalog {
         TemplateSpec("start_game.png", 0.75, NormalizedRoi(0.25, 0.55, 0.75, 1.0)),
         TemplateSpec("close_popup.png", 0.90, NormalizedRoi(0.78, 0.04, 1.0, 0.28)),
         TemplateSpec("close_popup_event.png", 0.78, NormalizedRoi(0.78, 0.04, 1.0, 0.28)),
+        TemplateSpec(
+            "rest_reminder_confirm.png",
+            0.88,
+            NormalizedRoi(0.40, 0.55, 0.62, 0.72),
+        ),
         TemplateSpec("lainongchang.png", 0.75, NormalizedRoi(0.0, 0.55, 0.55, 1.0)),
         TemplateSpec("refresh_pos.png", 0.60, NormalizedRoi(0.75, 0.70, 1.0, 1.0)),
         TemplateSpec("oneclick_farm.png", 0.75, NormalizedRoi(0.45, 0.35, 0.80, 0.80)),

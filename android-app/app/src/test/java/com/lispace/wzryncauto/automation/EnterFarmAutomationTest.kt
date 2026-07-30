@@ -15,7 +15,7 @@ class EnterFarmAutomationTest {
                     screen(match("start_game.png")),
                     screen(match("start_game.png")),
                     screen(match("start_game.png", x = 1190, y = 842)),
-                    screen(),
+                    screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
                     screen(match("lainongchang.png", x = 725, y = 800)),
@@ -59,7 +59,7 @@ class EnterFarmAutomationTest {
                     screen(match("close_popup_event.png", x = 2200, y = 120)),
                     screen(match("start_game.png")),
                     screen(match("start_game.png")),
-                    screen(),
+                    screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
@@ -83,7 +83,7 @@ class EnterFarmAutomationTest {
                     screen(match("start_game.png", x = 1190, y = 842)),
                     screen(match("start_game.png")),
                     screen(match("start_game.png", x = 1190, y = 842)),
-                    screen(),
+                    screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
                     screen(match("lainongchang.png")),
                     screen(match("lainongchang.png", x = 725, y = 800)),
@@ -98,6 +98,29 @@ class EnterFarmAutomationTest {
             listOf(1190 to 842, 1190 to 842, 725 to 800),
             runtime.taps,
         )
+    }
+
+    @Test
+    fun `does not infer lobby when start button temporarily disappears`() = runBlocking {
+        val runtime = FakeRuntime(
+            observations = ArrayDeque(
+                listOf(
+                    screen(match("start_game.png")),
+                    screen(match("start_game.png")),
+                    screen(),
+                    screen(),
+                    screen(),
+                    screen(),
+                    screen(),
+                ),
+            ),
+        )
+
+        val failure = runCatching { EnterFarmAutomation(runtime).run() }.exceptionOrNull()
+
+        assertTrue(failure is AutomationFailure)
+        assertEquals("5 次尝试后仍未确认进入游戏大厅", failure?.message)
+        assertTrue(runtime.taps.isEmpty())
     }
 
     private class FakeRuntime(

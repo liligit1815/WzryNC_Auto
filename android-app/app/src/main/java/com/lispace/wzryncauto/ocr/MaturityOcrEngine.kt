@@ -82,12 +82,25 @@ class MaturityOcrEngine(
         return try {
             val text = process(InputImage.fromBitmap(prepared, 0))
             val items = text.textBlocks.flatMap { block ->
-                block.lines.mapNotNull { line ->
-                    line.boundingBox?.let { box ->
-                        OcrTextItem(
-                            text = line.text,
-                            centerX = box.exactCenterX(),
-                            centerY = box.exactCenterY(),
+                block.lines.flatMap { line ->
+                    val elements = line.elements.mapNotNull { element ->
+                        element.boundingBox?.let { box ->
+                            OcrTextItem(
+                                text = element.text,
+                                centerX = box.exactCenterX(),
+                                centerY = box.exactCenterY(),
+                            )
+                        }
+                    }
+                    elements.ifEmpty {
+                        listOfNotNull(
+                            line.boundingBox?.let { box ->
+                                OcrTextItem(
+                                    text = line.text,
+                                    centerX = box.exactCenterX(),
+                                    centerY = box.exactCenterY(),
+                                )
+                            },
                         )
                     }
                 }

@@ -21,6 +21,7 @@ class FarmActionAutomationTest {
                     screen(),
                     screen(),
                     screen(),
+                    screen(),
                 ),
             ),
         )
@@ -69,6 +70,7 @@ class FarmActionAutomationTest {
                     screen(match("harvest_continue.png")),
                     screen(match("harvest_continue.png", 1200, 930)),
                     screen(),
+                    screen(),
                 ),
             ),
         )
@@ -77,6 +79,30 @@ class FarmActionAutomationTest {
 
         assertTrue(result.harvested)
         assertEquals(listOf(1522 to 619, 1200 to 930), runtime.taps)
+    }
+
+    @Test
+    fun `dismisses rest reminder before continuing farm actions`() = runBlocking {
+        val runtime = FakeRuntime(
+            ArrayDeque(
+                listOf(
+                    screen(match("rest_reminder_confirm.png", 1274, 1009)),
+                    screen(match("refresh_pos.png")),
+                    screen(match("oneclick_farm.png")),
+                    screen(match("oneclick_farm.png")),
+                    screen(match("oneclick_farm.png", 1522, 619)),
+                    screen(),
+                    screen(),
+                    screen(),
+                    screen(),
+                ),
+            ),
+        )
+
+        FarmActionAutomation(runtime).run()
+
+        assertEquals(1274 to 1009, runtime.taps.first())
+        assertEquals(1522 to 619, runtime.taps.last())
     }
 
     private class FakeRuntime(

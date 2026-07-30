@@ -56,10 +56,9 @@ class RootAutomationRuntime(
         val screenshot = withContext(Dispatchers.IO) { capture.file.readBytes() }
         val screenshotId = "${capture.file.lastModified()}-${capture.byteCount}"
         val observations = withContext(Dispatchers.Default) {
-            templateNames.associateWith { name ->
-                val result = matcher.match(screenshot, name, screenshotId).getOrElse {
-                    throw AutomationFailure("模板 $name 识别失败：${it.message}")
-                }
+            matcher.matchAll(screenshot, templateNames, screenshotId).getOrElse {
+                throw AutomationFailure("批量模板识别失败：${it.message}")
+            }.mapValues { (_, result) ->
                 TemplateObservation(
                     templateName = result.templateName,
                     matched = result.matched,

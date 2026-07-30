@@ -32,7 +32,7 @@ class EnterFarmAutomation(
         requireMatch(
             names = STARTUP_MARKERS,
             timeoutMs = 60_000,
-            intervalMs = 3_000,
+            intervalMs = 1_000,
             failure = "等待游戏登录页超时",
         )
 
@@ -46,7 +46,7 @@ class EnterFarmAutomation(
         requireMatch(
             names = LOBBY_MARKERS,
             timeoutMs = 90_000,
-            intervalMs = 3_000,
+            intervalMs = 1_000,
             failure = "等待游戏大厅超时",
         )
 
@@ -58,7 +58,7 @@ class EnterFarmAutomation(
         requireMatch(
             names = listOf(FARM_READY),
             timeoutMs = 60_000,
-            intervalMs = 3_000,
+            intervalMs = 1_000,
             failure = "等待农场加载超时",
         )
 
@@ -77,7 +77,7 @@ class EnterFarmAutomation(
                     operation("关闭$label：${popup.templateName}")
                     runtime.tap(popup.centerX, popup.centerY)
                     misses = 0
-                    wait(5_000)
+                    wait(1_000)
                 }
                 screen.matched(untilTemplate) != null -> {
                     onLog("${label}处理完成，已识别 $untilTemplate")
@@ -123,24 +123,28 @@ class EnterFarmAutomation(
             val start = before.matched(START_GAME)
             if (start == null) {
                 onLog("未找到开始游戏（${index + 1}/5）")
-                if (index < 4) wait(3_000)
+                if (index < 4) wait(1_000)
                 return@repeat
             }
 
             operation("开始游戏（${start.centerX}, ${start.centerY}）")
             runtime.tap(start.centerX, start.centerY)
-            wait(5_000)
+            wait(1_000)
 
             val after = runtime.observe(listOf(START_GAME) + LOBBY_MARKERS)
-            if (after.matched(*LOBBY_MARKERS.toTypedArray()) != null ||
-                after.matched(START_GAME) == null
-            ) {
+            if (after.matched(*LOBBY_MARKERS.toTypedArray()) != null) {
                 onLog("开始游戏点击已生效")
                 return
             }
-            onLog("开始游戏按钮仍存在，准备重试（${index + 1}/5）")
+            onLog(
+                if (after.matched(START_GAME) != null) {
+                    "开始游戏按钮仍存在，准备重试（${index + 1}/5）"
+                } else {
+                    "点击后暂未确认登录页或大厅，准备重试（${index + 1}/5）"
+                },
+            )
         }
-        throw AutomationFailure("点击开始游戏 5 次后仍停留在登录页")
+        throw AutomationFailure("5 次尝试后仍未确认进入游戏大厅")
     }
 
     private suspend fun requireMatch(
@@ -152,11 +156,16 @@ class EnterFarmAutomation(
         var elapsed = 0L
         while (elapsed <= timeoutMs) {
             control.awaitRunnable()
-            val observation = runtime.observe(names)
+            val observation = runtime.observe(names + REST_REMINDER_CONFIRM)
             if (!observation.isLandscape) {
                 onLog("等待王者荣耀切换横屏（${observation.width}×${observation.height}）")
             }
-            observation.matched(*names.toTypedArray())?.let {
+            observation.matched(REST_REMINDER_CONFIRM)?.let {
+                operation("关闭防沉迷休息提示（${it.centerX}, ${it.centerY}）")
+                runtime.tap(it.centerX, it.centerY)
+                wait(2_000)
+                return@let
+            } ?: observation.matched(*names.toTypedArray())?.let {
                 onLog("识别到 ${it.templateName}，score=%.3f".format(it.score))
                 return it
             }
@@ -194,7 +203,12 @@ class EnterFarmAutomation(
         private const val START_GAME = "start_game.png"
         private const val ENTER_FARM = "lainongchang.png"
         private const val FARM_READY = "refresh_pos.png"
-        private val POPUPS = listOf("close_popup.png", "close_popup_event.png")
+        private const val REST_REMINDER_CONFIRM = "rest_reminder_confirm.png"
+        private val POPUPS = listOf(
+            "close_popup.png",
+            "close_popup_event.png",
+            REST_REMINDER_CONFIRM,
+        )
         private val STARTUP_MARKERS = listOf(START_GAME) + POPUPS
         private val LOBBY_MARKERS = POPUPS + ENTER_FARM
     }

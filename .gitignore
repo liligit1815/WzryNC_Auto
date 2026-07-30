@@ -24,3 +24,4 @@ android-app/local.properties
 android-app/.gradle/
 android-app/.kotlin/
 android-app/**/build/
+.gradle-home/

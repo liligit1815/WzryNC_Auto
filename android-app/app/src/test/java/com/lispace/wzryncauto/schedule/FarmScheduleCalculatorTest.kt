@@ -113,6 +113,23 @@ class FarmScheduleCalculatorTest {
         assertEquals(time(2026, 7, 28, 18, 14, 52), schedule.wakeAt)
     }
 
+    @Test
+    fun schedulesClickFiveSecondsAfterTargetWithNegativeSafetyMargin() {
+        val target = time(2026, 7, 30, 12, 0)
+        val measuredSecondsToClick = 66L
+        val negativeSafetyMarginSeconds = -5L
+        val schedule = FarmScheduleCalculator.calculate(
+            firstWaterAt = time(2026, 7, 30, 11, 55),
+            observedMaturityAt = target,
+            now = time(2026, 7, 30, 11, 56),
+            batchStartedAt = time(2026, 7, 30, 11, 2),
+            wakeLeadSeconds = measuredSecondsToClick + negativeSafetyMarginSeconds,
+        )
+
+        assertEquals(time(2026, 7, 30, 11, 58, 59), schedule.wakeAt)
+        assertEquals(target.plusSeconds(5), schedule.wakeAt.plusSeconds(measuredSecondsToClick))
+    }
+
     private fun time(
         year: Int,
         month: Int,

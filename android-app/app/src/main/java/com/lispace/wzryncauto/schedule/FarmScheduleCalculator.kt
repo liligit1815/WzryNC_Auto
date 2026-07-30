@@ -49,12 +49,12 @@ object FarmScheduleCalculator {
         now: LocalDateTime,
         storedCycleMinutes: Int? = null,
         batchStartedAt: LocalDateTime? = null,
-        wakeEarlyMinutes: Long = 2,
+        wakeLeadSeconds: Long = 120,
     ): FarmSchedule {
         require(observedMaturityAt.isAfter(firstWaterAt)) {
             "OCR maturity must be after first watering"
         }
-        require(wakeEarlyMinutes >= 0)
+        require(wakeLeadSeconds >= 0)
 
         storedCycleMinutes?.also {
             require(cropRules.any { rule -> rule.cycleMinutes == it }) {
@@ -84,11 +84,11 @@ object FarmScheduleCalculator {
         val nextWatering = listOf(water2, water3, water4)
             .firstOrNull {
                 it.isBefore(observedMaturityAt) &&
-                    it.minusMinutes(wakeEarlyMinutes).isAfter(now)
+                    it.minusSeconds(wakeLeadSeconds).isAfter(now)
             }
         val target = nextWatering ?: observedMaturityAt
         val reason = if (nextWatering != null) WakeReason.WATERING else WakeReason.MATURITY
-        val proposedWake = target.minusMinutes(wakeEarlyMinutes)
+        val proposedWake = target.minusSeconds(wakeLeadSeconds)
         val wake = if (proposedWake.isAfter(now)) proposedWake else now
 
         check(!target.isAfter(observedMaturityAt)) {

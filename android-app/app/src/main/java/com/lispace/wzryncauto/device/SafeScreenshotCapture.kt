@@ -27,6 +27,7 @@ class SafeScreenshotCapture(
     private val cacheDirectory: File,
     private val hideOverlay: () -> Unit,
     private val restoreOverlay: () -> Unit,
+    private val streamFrame: () -> StreamFrame? = { null },
     private val settleDelayMs: Long = DEFAULT_SETTLE_DELAY_MS,
     private val maxAttempts: Int = DEFAULT_MAX_ATTEMPTS,
 ) {
@@ -42,6 +43,15 @@ class SafeScreenshotCapture(
         hideOverlay()
         try {
             delay(settleDelayMs)
+            streamFrame()?.let { frame ->
+                return@withLock publish(
+                    bytes = frame.encoded,
+                    width = frame.width,
+                    height = frame.height,
+                    attempts = 1,
+                    startedAt = startedAt,
+                )
+            }
             var lastError = "unknown screenshot error"
             repeat(maxAttempts) { attemptIndex ->
                 val capture = provider.capture()
@@ -56,33 +66,13 @@ class SafeScreenshotCapture(
                         bounds,
                     )
                     if (bounds.outWidth > 0 && bounds.outHeight > 0) {
-                        cacheDirectory.mkdirs()
-                        val temporary = File(cacheDirectory, "current.png.tmp")
-                        val current = File(cacheDirectory, "current.png")
-                        temporary.writeBytes(capture.stdout)
-                        val published = runCatching {
-                            Files.move(
-                                temporary.toPath(),
-                                current.toPath(),
-                                StandardCopyOption.ATOMIC_MOVE,
-                                StandardCopyOption.REPLACE_EXISTING,
-                            )
-                        }.isSuccess
-                        if (!published) {
-                            temporary.delete()
-                            lastError = "cannot publish screenshot cache"
-                        } else {
-                            return@withLock Result.success(
-                                ScreenshotCaptureResult(
-                                    file = current,
-                                    width = bounds.outWidth,
-                                    height = bounds.outHeight,
-                                    byteCount = capture.stdout.size,
-                                    attempts = attemptIndex + 1,
-                                    durationMs = elapsedMs(startedAt),
-                                ),
-                            )
-                        }
+                        return@withLock publish(
+                            capture.stdout,
+                            bounds.outWidth,
+                            bounds.outHeight,
+                            attemptIndex + 1,
+                            startedAt,
+                        )
                     } else {
                         lastError = "PNG cannot be decoded"
                     }
@@ -107,6 +97,41 @@ class SafeScreenshotCapture(
 
     private fun elapsedMs(startedAt: Long): Long =
         (System.nanoTime() - startedAt) / 1_000_000
+
+    private fun publish(
+        bytes: ByteArray,
+        width: Int,
+        height: Int,
+        attempts: Int,
+        startedAt: Long,
+    ): Result<ScreenshotCaptureResult> {
+        cacheDirectory.mkdirs()
+        val temporary = File(cacheDirectory, "current.png.tmp")
+        val current = File(cacheDirectory, "current.png")
+        temporary.writeBytes(bytes)
+        val published = runCatching {
+            Files.move(
+                temporary.toPath(),
+                current.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING,
+            )
+        }.isSuccess
+        if (!published) {
+            temporary.delete()
+            return Result.failure(IllegalStateException("cannot publish screenshot cache"))
+        }
+        return Result.success(
+            ScreenshotCaptureResult(
+                file = current,
+                width = width,
+                height = height,
+                byteCount = bytes.size,
+                attempts = attempts,
+                durationMs = elapsedMs(startedAt),
+            ),
+        )
+    }
 
     companion object {
         private const val DEFAULT_SETTLE_DELAY_MS = 180L

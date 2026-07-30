@@ -5,12 +5,14 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -33,6 +35,7 @@ import com.lispace.wzryncauto.automation.EnterFarmAutomation
 import com.lispace.wzryncauto.automation.FarmActionAutomation
 import com.lispace.wzryncauto.automation.RootAutomationRuntime
 import com.lispace.wzryncauto.device.RootCommandExecutor
+import com.lispace.wzryncauto.device.MediaProjectionFrameSource
 import com.lispace.wzryncauto.device.RootDeviceController
 import com.lispace.wzryncauto.device.RootScreenshotProvider
 import com.lispace.wzryncauto.device.SafeScreenshotCapture
@@ -59,6 +62,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileWriter
 import java.time.Duration
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -68,12 +72,14 @@ import kotlin.math.abs
 class OverlayService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val rootExecutor = RootCommandExecutor()
+    private val frameSource by lazy { MediaProjectionFrameSource(applicationContext) }
     private val screenshotCapture by lazy {
         SafeScreenshotCapture(
             provider = RootScreenshotProvider(rootExecutor),
             cacheDirectory = cacheDir,
             hideOverlay = { setOverlayVisibility(View.INVISIBLE) },
             restoreOverlay = { setOverlayVisibility(View.VISIBLE) },
+            streamFrame = { frameSource.latestFrame() },
         )
     }
     private val templateMatcher by lazy { OpenCvTemplateMatcher(assets) }
@@ -103,8 +109,11 @@ class OverlayService : Service() {
     private var currentToast: Toast? = null
     private var lastToastState: AutomationState? = null
     private var brightnessSnapshot: BrightnessSnapshot? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
     private val keyLogLines = ArrayDeque<KeyLogLine>()
     private var currentLogRound = 0
+    private var totalExperience = 0
+    private val totalCrops = linkedMapOf<String, Int>()
 
     private var loopCount = 5
     private var isInfinite = false
@@ -121,6 +130,7 @@ class OverlayService : Service() {
     private lateinit var loopText: TextView
     private lateinit var pauseButton: Button
     private lateinit var logText: TextView
+    private lateinit var harvestSummaryText: TextView
     private lateinit var operationView: View
     private lateinit var logView: View
     private lateinit var operationTabButton: Button
@@ -131,6 +141,7 @@ class OverlayService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("悬浮窗已就绪"))
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        loadPersistedLogs()
         if (Settings.canDrawOverlays(this)) {
             showBubble()
         } else {
@@ -144,9 +155,11 @@ class OverlayService : Service() {
             ACTION_EMERGENCY_STOP -> stopSimulation("紧急停止")
             ACTION_TEST_SCREENSHOT -> testScreenshot()
             ACTION_TEST_OCR -> testMaturityOcr()
+            ACTION_TEST_HARVEST_OCR -> testHarvestOcr()
             ACTION_START_AUTOMATION -> startSimulation()
+            ACTION_ENABLE_FRAME_STREAM -> enableFrameStream(intent)
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -181,7 +194,43 @@ class OverlayService : Service() {
         currentToast = null
         serviceScope.cancel()
         if (ocrEngineDelegate.isInitialized()) ocrEngine.close()
+        frameSource.close()
+        releaseScreenWakeLock()
         super.onDestroy()
+    }
+
+    private fun enableFrameStream(intent: Intent) {
+        val resultCode = intent.getIntExtra(EXTRA_PROJECTION_RESULT_CODE, 0)
+        @Suppress("DEPRECATION")
+        val projectionData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
+        } else {
+            intent.getParcelableExtra(EXTRA_PROJECTION_DATA)
+        }
+        if (resultCode == 0 || projectionData == null) {
+            appendLog("屏幕流未获授权，继续使用 ROOT 截图")
+            return
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    } else {
+                        0
+                    }
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification("屏幕流识别已启用"),
+                    types,
+                )
+            }
+            frameSource.start(resultCode, projectionData)
+        }.onSuccess {
+            appendLog("屏幕流识别已启用，异常时自动回退 ROOT 截图")
+        }.onFailure {
+            appendLog("屏幕流启动失败：${it.message}；继续使用 ROOT 截图")
+        }
     }
 
     private fun showBubble() {
@@ -338,6 +387,12 @@ class OverlayService : Service() {
         val logContent = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
+        harvestSummaryText = label(renderHarvestSummary(), 14f).apply {
+            setTextColor(Color.rgb(255, 224, 130))
+            background = roundedDrawable(Color.argb(180, 46, 56, 48), dp(8).toFloat())
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        logContent.addView(harvestSummaryText)
         logContent.addView(label("关键日志", 14f))
         logText = label(renderKeyLogs(), 12f).apply {
             setTextColor(Color.rgb(190, 230, 195))
@@ -412,6 +467,8 @@ class OverlayService : Service() {
         completedRounds = 0
         currentLogRound = 0
         keyLogLines.clear()
+        totalExperience = 0
+        totalCrops.clear()
         remainingSeconds = 0L
         nextWakeAt = null
         currentOperation = "准备执行完整农场动作"
@@ -428,12 +485,14 @@ class OverlayService : Service() {
                 }
             }
             runCatching {
+                acquireScreenWakeLock()
                 prepareRunBrightness()
                 try {
                     runTimedLoop(control)
                 } finally {
                     withContext(NonCancellable) {
                         restoreRunBrightness()
+                        releaseScreenWakeLock()
                     }
                 }
             }.onSuccess {
@@ -472,6 +531,7 @@ class OverlayService : Service() {
             remainingSeconds = 0L
             refreshUi()
             appendLog("第 ${completedRounds + 1} 轮开始")
+            val roundStartedAt = LocalDateTime.now()
 
             EnterFarmAutomation(
                 runtime = automationRuntime,
@@ -486,14 +546,18 @@ class OverlayService : Service() {
                 onLog = ::appendLog,
             ).run()
             if (result.harvested) {
-                val details = result.harvestInfo?.let { info ->
-                    buildList {
-                        info.crops.forEach { (crop, count) -> add("$crop×$count") }
-                        if (info.experience > 0) add("经验×${info.experience}")
-                    }.joinToString("、").ifBlank { "已收获" }
-                } ?: "已收获（内容未识别）"
-                appendLog("收获内容：$details")
+                result.harvestInfo?.let(::recordHarvest)
             }
+            val secondsToOneClick = Duration.between(
+                roundStartedAt,
+                result.firstWaterAt,
+            ).seconds.coerceAtLeast(1)
+            val wakeLeadSeconds =
+                (secondsToOneClick + SCHEDULE_SAFETY_MARGIN_SECONDS).coerceAtLeast(0)
+            appendLog(
+                "启动到一键务农：${secondsToOneClick}秒；" +
+                    "排程安全余量：${SCHEDULE_SAFETY_MARGIN_SECONDS}秒",
+            )
             completedRounds += 1
             refreshUi()
 
@@ -518,6 +582,7 @@ class OverlayService : Service() {
                         now = LocalDateTime.now(),
                         storedCycleMinutes = stored?.cycleMinutes,
                         batchStartedAt = stored?.batchStartedAt,
+                        wakeLeadSeconds = wakeLeadSeconds,
                     )
                     farmStateStore.save(
                         cycleMinutes = schedule.cycleMinutes,
@@ -525,6 +590,11 @@ class OverlayService : Service() {
                         observedMaturityAt = schedule.observedMaturityAt,
                     )
                     logSchedule(schedule, result.harvested)
+                    appendLog(
+                        "预计一键务农：" +
+                            schedule.wakeAt.plusSeconds(secondsToOneClick)
+                                .format(DATE_TIME_FORMAT),
+                    )
                     showOperationToast(
                         "排程完成：${schedule.wakeAt.format(TIME_FORMAT)} 执行",
                     )
@@ -601,6 +671,7 @@ class OverlayService : Service() {
         remainingSeconds = 0L
         nextWakeAt = null
         currentOperation = reason
+        releaseScreenWakeLock()
         appendLog(reason)
         showOperationToast(reason)
         updateBubbleColor(if (reason == "紧急停止") COLOR_ERROR else COLOR_IDLE)
@@ -773,6 +844,33 @@ class OverlayService : Service() {
         }
     }
 
+    private fun testHarvestOcr() {
+        appendLog("截屏并核验收获信息…")
+        serviceScope.launch {
+            val capture = screenshotCapture.capture().getOrElse {
+                appendLog("收获 OCR 前截图失败: ${it.message}")
+                return@launch
+            }
+            val screenshotBytes = withContext(Dispatchers.IO) {
+                capture.file.readBytes()
+            }
+            val observation = withContext(Dispatchers.Default) {
+                ocrEngine.recognizeHarvest(screenshotBytes)
+            }.getOrElse {
+                appendLog("收获 OCR 失败: ${it.message}")
+                return@launch
+            }
+            val parsed = observation.parsed
+            appendLog("收获 OCR 原文: ${observation.rawText.ifBlank { "<空>" }}")
+            appendLog(
+                "收获 OCR 结果: 经验=${parsed?.experience ?: 0}，作物=" +
+                    (parsed?.crops?.entries?.joinToString("、") { (name, count) ->
+                        "$name×$count"
+                    }?.ifBlank { "无" } ?: "无"),
+            )
+        }
+    }
+
     private fun setOverlayVisibility(visibility: Int) {
         bubble?.visibility = visibility
         panel?.visibility = visibility
@@ -810,6 +908,7 @@ class OverlayService : Service() {
 
     private fun appendLog(message: String) {
         Log.i(LOG_TAG, message)
+        persistLog("${LocalDateTime.now().format(PERSISTED_LOG_FORMAT)} $message")
         if (!isKeyLog(message)) return
         ROUND_START.find(message)?.groupValues?.get(1)?.toIntOrNull()?.let {
             currentLogRound = it
@@ -819,8 +918,74 @@ class OverlayService : Service() {
         if (::logText.isInitialized) logText.text = renderKeyLogs()
     }
 
+    private fun recordHarvest(info: com.lispace.wzryncauto.ocr.HarvestInfo) {
+        totalExperience += info.experience
+        info.crops.forEach { (crop, count) ->
+            totalCrops[crop] = (totalCrops[crop] ?: 0) + count
+        }
+        if (::harvestSummaryText.isInitialized) {
+            harvestSummaryText.text = renderHarvestSummary()
+        }
+        val crops = info.crops.entries.joinToString("、") { (crop, count) -> "$crop×$count" }
+            .ifBlank { "无作物" }
+        appendLog("本轮收获：经验${info.experience}，$crops")
+    }
+
+    private fun renderHarvestSummary(): String {
+        val crops = totalCrops.entries.joinToString("、") { (crop, count) -> "$crop：$count" }
+            .ifBlank { "暂无" }
+        return "累计收获\n经验：$totalExperience\n作物：$crops"
+    }
+
+    private fun persistLog(line: String) {
+        runCatching {
+            val logFile = File(filesDir, RUNTIME_LOG_FILE)
+            if (logFile.length() > MAX_RUNTIME_LOG_BYTES) {
+                val retained = logFile.readLines().takeLast(PERSISTED_LOG_LINES).joinToString("\n")
+                logFile.writeText(if (retained.isBlank()) "" else "$retained\n")
+            }
+            FileWriter(logFile, true).use {
+                it.appendLine(line)
+            }
+        }.onFailure {
+            Log.e(LOG_TAG, "persist log failed", it)
+        }
+    }
+
+    private fun loadPersistedLogs() {
+        runCatching {
+            File(filesDir, RUNTIME_LOG_FILE)
+                .takeIf(File::isFile)
+                ?.readLines()
+                ?.takeLast(PERSISTED_LOG_LINES)
+                ?.forEach { line -> keyLogLines.addLast(KeyLogLine(0, line)) }
+        }.onFailure {
+            Log.e(LOG_TAG, "load persisted log failed", it)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun acquireScreenWakeLock() {
+        if (screenWakeLock?.isHeld == true) return
+        screenWakeLock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(
+            PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ON_AFTER_RELEASE,
+            "$packageName:automation-screen",
+        ).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        appendLog("运行期间屏幕常亮已启用")
+    }
+
+    private fun releaseScreenWakeLock() {
+        screenWakeLock?.let { lock ->
+            if (lock.isHeld) lock.release()
+        }
+        screenWakeLock = null
+    }
+
     private fun trimKeyLogs() {
-        val minimumRound = (currentLogRound - 2).coerceAtLeast(1)
+        val minimumRound = (currentLogRound - (VISIBLE_LOG_ROUNDS - 1)).coerceAtLeast(1)
         keyLogLines.removeAll { it.round in 1 until minimumRound }
         while (keyLogLines.size > MAX_VISIBLE_LOG_LINES) keyLogLines.removeFirst()
     }
@@ -862,9 +1027,14 @@ class OverlayService : Service() {
 
     private fun isKeyLog(message: String): Boolean {
         return ROUND_START.containsMatchIn(message) ||
+            message.startsWith("本轮收获：") ||
+            message.startsWith("启动到一键务农：") ||
+            message.startsWith("检测到收获，记录新的") ||
+            message.startsWith("作物周期：") ||
             message.startsWith("成熟时间：") ||
+            message.startsWith("下个目标：") ||
             message.startsWith("下次操作时间：") ||
-            message.startsWith("收获内容：") ||
+            message.startsWith("预计一键务农：") ||
             message.startsWith("自动化失败：") ||
             message.startsWith("异常：")
     }
@@ -876,12 +1046,13 @@ class OverlayService : Service() {
         Log.i(LOG_TAG, "automation state=$state message=$message")
     }
 
-    /**
-     * Legacy/manual feedback remains in the panel log. Automation Toasts are
-     * emitted only once at the beginning of selected stages by showStageToast.
-     */
     private fun showOperationToast(message: String) {
-        // Intentionally no-op. Call sites also update the panel log or state.
+        currentToast?.cancel()
+        currentToast = Toast.makeText(
+            applicationContext,
+            "WzryNCAuto\n$message",
+            Toast.LENGTH_SHORT,
+        ).also(Toast::show)
     }
 
     private fun showStageToast(state: AutomationState) {
@@ -1043,12 +1214,24 @@ class OverlayService : Service() {
         const val ACTION_EMERGENCY_STOP = "com.lispace.wzryncauto.EMERGENCY_STOP"
         const val ACTION_TEST_SCREENSHOT = "com.lispace.wzryncauto.TEST_SCREENSHOT"
         const val ACTION_TEST_OCR = "com.lispace.wzryncauto.TEST_OCR"
+        const val ACTION_TEST_HARVEST_OCR =
+            "com.lispace.wzryncauto.TEST_HARVEST_OCR"
         const val ACTION_START_AUTOMATION = "com.lispace.wzryncauto.START_AUTOMATION"
+        const val ACTION_ENABLE_FRAME_STREAM =
+            "com.lispace.wzryncauto.ENABLE_FRAME_STREAM"
+        const val EXTRA_PROJECTION_RESULT_CODE = "projection_result_code"
+        const val EXTRA_PROJECTION_DATA = "projection_data"
         private const val MAX_VISIBLE_LOG_LINES = 200
+        private const val VISIBLE_LOG_ROUNDS = 9
         private const val LOG_TAG = "WzryOverlay"
         private val TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm:ss")
         private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")
+        private val PERSISTED_LOG_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         private val ROUND_START = Regex("""第\s*(\d+)\s*轮开始""")
+        private const val RUNTIME_LOG_FILE = "runtime.log"
+        private const val MAX_RUNTIME_LOG_BYTES = 1_000_000L
+        private const val PERSISTED_LOG_LINES = 100
+        private const val SCHEDULE_SAFETY_MARGIN_SECONDS = -5L
 
         private const val COLOR_IDLE = 0xFF616161.toInt()
         private const val COLOR_RUNNING = 0xFF2E7D32.toInt()
