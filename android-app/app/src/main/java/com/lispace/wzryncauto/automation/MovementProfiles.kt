@@ -30,6 +30,12 @@ object MovementProfiles {
             statueToFarmland = SwipeGesture(385, 1165, 385, 869, 1200),
         ),
         FarmMovementProfile(
+            screenWidth = 2560,
+            screenHeight = 1564,
+            spawnToStatue = SwipeGesture(385, 1138, 200, 825, 1500),
+            statueToFarmland = SwipeGesture(385, 1138, 385, 849, 1200),
+        ),
+        FarmMovementProfile(
             screenWidth = 1280,
             screenHeight = 720,
             spawnToStatue = SwipeGesture(160, 486, 60, 313, 1500),
@@ -48,10 +54,8 @@ object MovementProfiles {
             compareBy<FarmMovementProfile>(
                 { kotlin.math.abs(it.screenWidth.toDouble() / it.screenHeight - targetAspect) },
                 {
-                    kotlin.math.abs(
-                        kotlin.math.ln(width.toDouble() / it.screenWidth) +
-                            kotlin.math.ln(height.toDouble() / it.screenHeight),
-                    )
+                    kotlin.math.abs(kotlin.math.ln(width.toDouble() / it.screenWidth)) +
+                        kotlin.math.abs(kotlin.math.ln(height.toDouble() / it.screenHeight))
                 },
             ),
         )
@@ -62,7 +66,20 @@ object MovementProfiles {
             screenHeight = height,
             spawnToStatue = reference.spawnToStatue.scaled(scaleX, scaleY),
             statueToFarmland = reference.statueToFarmland.scaled(scaleX, scaleY),
-        )
+        ).also(::requireSafeProfile)
+    }
+
+    private fun requireSafeProfile(profile: FarmMovementProfile) {
+        listOf(profile.spawnToStatue, profile.statueToFarmland).forEach { gesture ->
+            require(
+                gesture.startX in 0 until profile.screenWidth &&
+                    gesture.endX in 0 until profile.screenWidth &&
+                    gesture.startY in 0 until profile.screenHeight &&
+                    gesture.endY in 0 until profile.screenHeight,
+            ) {
+                "Scaled movement exceeds ${profile.screenWidth}x${profile.screenHeight}: $gesture"
+            }
+        }
     }
 
     private fun SwipeGesture.scaled(scaleX: Double, scaleY: Double) =

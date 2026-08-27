@@ -1,27 +1,35 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-venv/
-
-# 截图临时文件
-assets/current.png
-assets/after_oneclick.png
-assets/no_oneclick.png
-assets/maturity_*.png
-assets/farm_state.json
-diagnostics/
-android-ocr-samples/
-
-# IDE
-.vscode/
-.idea/
-
-# Local Android build toolchain and machine-specific SDK path
+# Android / Gradle build products
 .android-tools/
+.gradle-home/
 android-app/local.properties
 android-app/.gradle/
 android-app/.kotlin/
 android-app/**/build/
-.gradle-home/
+*.apk
+
+# IDE and local machine settings
+.idea/
+.vscode/
+*.iml
+
+# Runtime logs and exported diagnostics
+*.log
+diagnostics/
+android-ocr-samples/
+
+# Local release signing material
+/WzryNCAuto Release 构建/
+/WzryNCAuto Release 构建.zip
+*.p12
+*.jks
+*.keystore
+*release.properties
+
+# This private repository intentionally carries its canonical release key.
+!/release-signing/
+!/release-signing/wzryncauto-release.p12
+!/release-signing/wzryncauto-release.properties
+
+# Windows redirection mistakes
+/nul
+/android-app/nul

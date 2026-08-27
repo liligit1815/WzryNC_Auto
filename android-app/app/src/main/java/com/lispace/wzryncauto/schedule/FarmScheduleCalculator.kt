@@ -21,23 +21,29 @@ enum class WakeReason { WATERING, MATURITY }
 
 object FarmScheduleCalculator {
     private val cropRules = listOf(
-        CropRule(cycleMinutes = 5, remainingAfterFirstWater = 5),
-        CropRule(cycleMinutes = 60, remainingAfterFirstWater = 55),
-        CropRule(cycleMinutes = 480, remainingAfterFirstWater = 400),
-        CropRule(cycleMinutes = 960, remainingAfterFirstWater = 800),
-        CropRule(cycleMinutes = 1920, remainingAfterFirstWater = 1600),
+        CropRule(cycleMinutes = 5),
+        CropRule(cycleMinutes = 60),
+        CropRule(cycleMinutes = 480),
+        CropRule(cycleMinutes = 960),
+        CropRule(cycleMinutes = 1920),
     )
 
     fun resolveObservedMaturity(
         reading: MaturityReading.Time,
         firstWaterAt: LocalDateTime,
     ): LocalDateTime {
-        var resolved = firstWaterAt
+        reading.relativeMinutes?.let { relativeMinutes ->
+            val observedAt = reading.observedAt ?: firstWaterAt
+            return observedAt.plusMinutes(relativeMinutes.toLong()).withNano(0)
+        }
+        val observedAt = reading.observedAt ?: firstWaterAt
+        var resolved = observedAt
+            .plusDays(reading.dayOffset.toLong())
             .withHour(reading.hour)
             .withMinute(reading.minute)
             .withSecond(0)
             .withNano(0)
-        if (reading.tomorrowHint || !resolved.isAfter(firstWaterAt)) {
+        if (reading.dayOffset == 0 && !resolved.isAfter(firstWaterAt)) {
             resolved = resolved.plusDays(1)
         }
         return resolved
@@ -70,7 +76,7 @@ object FarmScheduleCalculator {
         val classificationMinutes = Duration.between(batchStart, observedMaturityAt)
             .toMillis() / 60_000.0
         val inferredRule = cropRules.firstOrNull {
-            classificationMinutes <= it.remainingAfterFirstWater + OCR_MINUTE_TOLERANCE
+            classificationMinutes <= it.cycleMinutes + OCR_MINUTE_TOLERANCE
         } ?: cropRules.last()
         // Persisted state is only a hint. Always let the current OCR remainder
         // correct a previously misclassified longer cycle (for example, a
@@ -108,10 +114,7 @@ object FarmScheduleCalculator {
         )
     }
 
-    private data class CropRule(
-        val cycleMinutes: Int,
-        val remainingAfterFirstWater: Int,
-    )
+    private data class CropRule(val cycleMinutes: Int)
 
     /**
      * Maturity OCR contains hours and minutes but no seconds. The first-water

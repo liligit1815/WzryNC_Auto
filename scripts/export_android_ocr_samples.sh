@@ -16,7 +16,7 @@ fi
 
 mkdir -p "$output_dir"
 if ! "$adb_bin" -s "$device" exec-out \
-    run-as com.lili.wzryfarm \
+    run-as com.lispace.wzryncauto \
     tar -C files/ocr_samples -cf - maturity \
     | tar -C "$output_dir" -xf -; then
     echo "导出失败：请确认已安装 debug APK，并至少执行过一次“测试 OCR”" >&2

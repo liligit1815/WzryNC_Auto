@@ -33,5 +33,12 @@ object DeviceCommands {
     fun processId(): String = "pidof $GAME_PACKAGE"
 
     fun foregroundActivity(): String =
-        "dumpsys activity activities | grep -m 1 mResumedActivity"
+        "dumpsys activity activities | " +
+            "grep -m 1 -E 'topResumedActivity|mResumedActivity'"
+
+    fun wakeScreen(): String = "input keyevent KEYCODE_WAKEUP"
+
+    fun dismissKeyguard(): String = "wm dismiss-keyguard"
+
+    fun pressBack(): String = "input keyevent KEYCODE_BACK"
 }

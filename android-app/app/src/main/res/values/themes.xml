@@ -3,6 +3,9 @@
     <style name="Theme.WzryFarm" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:colorAccent">#2E7D32</item>
+        <item name="android:statusBarColor">#F7FCFF</item>
+        <item name="android:navigationBarColor">#F7FCFF</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">#2F8FDB</item>
     </style>
 </resources>

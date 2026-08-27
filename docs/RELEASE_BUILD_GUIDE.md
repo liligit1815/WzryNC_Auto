@@ -2,12 +2,15 @@
 
 本文用于指导后续构建可正式发布、可覆盖升级的 WzryNCAuto APK。
 
+新电脑首次配置与完整换机检查见 [`NEW_COMPUTER_RELEASE_BUILD.md`](NEW_COMPUTER_RELEASE_BUILD.md)。
+
 ## 1. 重要原则
 
 - 应用包名固定为 `com.lispace.wzryncauto`。
 - 后续版本必须继续使用现有正式密钥签名。
 - 不要重新生成同名密钥。使用新密钥签名的 APK 无法直接覆盖已安装的正式版。
-- 密钥库和密码配置不能提交到 Git，也不能放进 APK。
+- 本项目的 Git 仓库必须保持私有；正式密钥与密码配置仅允许保存在该私有仓库和加密离线备份中。
+- 不得将仓库改为公开、创建公开 Fork、把签名目录上传到公共网盘或将其放进 APK。
 
 当前正式签名证书的 SHA-256 指纹为：
 
@@ -17,13 +20,13 @@
 
 每次正式发布前均应核对该指纹。
 
-## 2. 必须备份的签名文件
+## 2. 仓库内签名文件与离线备份
 
-当前构建机使用以下两个文件：
+Gradle 默认读取私有仓库内的以下两个文件：
 
 ```text
-/home/lili/.android-keys/wzryncauto-release.p12
-/home/lili/.android-keys/wzryncauto-release.properties
+release-signing/wzryncauto-release.p12
+release-signing/wzryncauto-release.properties
 ```
 
 其中：
@@ -31,29 +34,31 @@
 - `wzryncauto-release.p12` 是正式签名私钥。
 - `wzryncauto-release.properties` 保存密钥位置、别名和密码，属于敏感明文配置。
 
-两者必须一起加密备份。建议保留至少两份离线备份，并分别存放。恢复文件后应限制访问权限：
+两者必须一起备份。除私有仓库外，建议再保留至少两份加密离线备份并分别存放。Linux/macOS 的备份文件应限制访问权限：
 
 ```bash
-chmod 600 /home/lili/.android-keys/wzryncauto-release.p12
-chmod 600 /home/lili/.android-keys/wzryncauto-release.properties
+chmod 600 /安全备份目录/wzryncauto-release.p12
+chmod 600 /安全备份目录/wzryncauto-release.properties
 ```
 
 ## 3. 签名配置格式
 
-默认签名配置文件为：
+默认签名配置文件位于私有仓库：
 
 ```text
-/home/lili/.android-keys/wzryncauto-release.properties
+release-signing/wzryncauto-release.properties
 ```
 
-其格式如下。尖括号内容应替换为实际值，不要将真实密码写入本文或版本库：
+配置文件已随私有仓库提供。以下仅说明格式，不要把实际密码复制到文档、Issue、日志或聊天记录：
 
 ```properties
-storeFile=/home/lili/.android-keys/wzryncauto-release.p12
+storeFile=wzryncauto-release.p12
 storePassword=<密钥库密码>
 keyAlias=wzryncauto
 keyPassword=<密钥密码>
 ```
+
+构建脚本会优先使用配置文件同目录下的 `wzryncauto-release.p12`，因此仓库移动到其他磁盘或电脑后无需修改绝对路径。
 
 如果在其他电脑或其他路径构建，可以使用以下任一方式指定配置文件：
 
@@ -76,12 +81,14 @@ export WZRY_RELEASE_SIGNING_PROPERTIES=/安全路径/wzryncauto-release.properti
 android-app/app/build.gradle.kts
 ```
 
-更新 `defaultConfig` 中的：
+当前仓库版本为：
 
 ```kotlin
-versionCode = 2
-versionName = "0.2.0"
+versionCode = 22
+versionName = "0.3.19"
 ```
+
+准备下一次发布时，将二者更新为计划发布的新值。
 
 版本规则：
 
@@ -95,9 +102,6 @@ versionName = "0.2.0"
 
 ```bash
 cd android-app
-JAVA_HOME=../.android-tools/jdk \
-ANDROID_HOME=../.android-tools/android-sdk \
-GRADLE_USER_HOME=../.android-tools/gradle-home \
 ./gradlew clean testDebugUnitTest assembleRelease
 ```
 
@@ -122,9 +126,7 @@ android-app/app/build/outputs/apk/release/app-release.apk
 在 `android-app` 目录执行：
 
 ```bash
-JAVA_HOME=../.android-tools/jdk \
-PATH=../.android-tools/jdk/bin:$PATH \
-../.android-tools/android-sdk/build-tools/35.0.0/apksigner \
+"$ANDROID_HOME/build-tools/35.0.0/apksigner" \
 verify --verbose --print-certs \
 app/build/outputs/apk/release/app-release.apk
 ```
@@ -138,7 +140,7 @@ app/build/outputs/apk/release/app-release.apk
 ### 6.2 验证包名和版本
 
 ```bash
-../.android-tools/android-sdk/build-tools/35.0.0/aapt2 \
+"$ANDROID_HOME/build-tools/35.0.0/aapt2" \
 dump badging app/build/outputs/apk/release/app-release.apk
 ```
 
@@ -173,7 +175,7 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 
 ### 提示缺少正式签名配置
 
-确认 `wzryncauto-release.properties` 存在，或使用环境变量/Gradle 属性指定其路径；同时确认配置中的 `storeFile` 指向已经恢复的 `.p12` 文件。
+确认 `release-signing/wzryncauto-release.properties` 存在，或使用环境变量/Gradle 属性指定其路径；同时确认配置文件旁边存在配套的 `.p12` 文件。
 
 ### 提示密码错误或密钥别名不存在
 

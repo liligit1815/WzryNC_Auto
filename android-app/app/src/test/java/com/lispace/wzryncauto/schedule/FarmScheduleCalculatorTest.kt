@@ -19,6 +19,66 @@ class FarmScheduleCalculatorTest {
     }
 
     @Test
+    fun resolvesExplicitDayAfterMaturity() {
+        val first = time(2026, 7, 27, 10, 0)
+        val reading = MaturityReading.Time(
+            hour = 8,
+            minute = 30,
+            tomorrowHint = true,
+            rawText = "后天08:30成熟",
+            dayOffset = 2,
+        )
+
+        assertEquals(
+            time(2026, 7, 29, 8, 30),
+            FarmScheduleCalculator.resolveObservedMaturity(reading, first),
+        )
+    }
+
+    @Test
+    fun anchorsExplicitDayOffsetToOcrDateAcrossMidnight() {
+        val observedAt = time(2026, 7, 28, 0, 1)
+        val reading = MaturityReading.Time(
+            hour = 8,
+            minute = 30,
+            tomorrowHint = true,
+            rawText = "明天08:30成熟",
+            dayOffset = 1,
+            observedAt = observedAt,
+        )
+
+        assertEquals(
+            time(2026, 7, 29, 8, 30),
+            FarmScheduleCalculator.resolveObservedMaturity(
+                reading,
+                firstWaterAt = time(2026, 7, 27, 23, 59),
+            ),
+        )
+    }
+
+    @Test
+    fun resolvesRelativeMaturityFromOcrObservationTime() {
+        val observedAt = time(2026, 7, 27, 23, 30, 12)
+        val reading = MaturityReading.Time(
+            hour = 1,
+            minute = 45,
+            tomorrowHint = true,
+            rawText = "2小时15分钟后成熟",
+            dayOffset = 1,
+            relativeMinutes = 135,
+            observedAt = observedAt,
+        )
+
+        assertEquals(
+            time(2026, 7, 28, 1, 45, 12),
+            FarmScheduleCalculator.resolveObservedMaturity(
+                reading,
+                firstWaterAt = time(2026, 7, 27, 23, 28),
+            ),
+        )
+    }
+
+    @Test
     fun neverSchedulesAfterOcrMaturity() {
         val first = time(2026, 7, 27, 11, 55, 28)
         val maturity = time(2026, 7, 27, 12, 0)
@@ -95,6 +155,19 @@ class FarmScheduleCalculatorTest {
         assertEquals(WakeReason.WATERING, schedule.reason)
         assertEquals(time(2026, 7, 28, 17, 56, 52), schedule.targetAt)
         assertEquals(time(2026, 7, 28, 17, 54, 52), schedule.wakeAt)
+    }
+
+    @Test
+    fun classifiesObservedFourHundredFortyMinuteGrapeAsEightHourCrop() {
+        val first = time(2026, 8, 10, 14, 27)
+        val schedule = FarmScheduleCalculator.calculate(
+            firstWaterAt = first,
+            observedMaturityAt = time(2026, 8, 10, 21, 47),
+            now = first.plusMinutes(1),
+        )
+
+        assertEquals(480, schedule.cycleMinutes)
+        assertEquals(time(2026, 8, 10, 17, 7), schedule.targetAt)
     }
 
     @Test

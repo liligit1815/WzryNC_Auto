@@ -37,7 +37,8 @@ object HarvestInfoParser {
     )
     private val nonCropTextParts = setOf(
         "恭喜", "获得", "点击", "继续", "农场", "经验", "経験",
-        "收获", "奖励", "确定", "关闭",
+        "收获", "奖励", "确定", "关闭", "种植", "仓库", "社交",
+        "百科", "对局", "升级", "加速", "种子", "可升级",
     )
     // ML Kit occasionally substitutes a Katakana glyph for a visually similar
     // Chinese character (for example 胡萝卜 -> 胡萝ト). Preserve such unknown

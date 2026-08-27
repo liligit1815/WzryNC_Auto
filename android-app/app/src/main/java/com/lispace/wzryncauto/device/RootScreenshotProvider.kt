@@ -3,7 +3,7 @@ package com.lispace.wzryncauto.device
 class RootScreenshotProvider(
     private val executor: RootCommandExecutor,
 ) {
-    suspend fun capture(timeoutMs: Long = 30_000): BinaryCommandResult {
+    suspend fun capture(timeoutMs: Long = 10_000): BinaryCommandResult {
         val result = executor.executeBinary("screencap -p", timeoutMs)
         if (result.isSuccess && !isPng(result.stdout)) {
             return result.copy(

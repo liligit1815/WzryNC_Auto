@@ -6,15 +6,27 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val repositorySigningPropertiesFile = rootProject.projectDir.parentFile.resolve(
+    "release-signing/wzryncauto-release.properties",
+)
 val releaseSigningPropertiesFile = file(
     providers.gradleProperty("wzryReleaseSigningProperties")
         .orElse(providers.environmentVariable("WZRY_RELEASE_SIGNING_PROPERTIES"))
-        .orElse("${System.getProperty("user.home")}/.android-keys/wzryncauto-release.properties")
+        .orElse(repositorySigningPropertiesFile.absolutePath)
         .get(),
 )
 val releaseSigningProperties = Properties().apply {
     if (releaseSigningPropertiesFile.isFile) {
         releaseSigningPropertiesFile.inputStream().use(::load)
+    }
+}
+val releaseStoreFile = releaseSigningProperties.getProperty("storeFile")?.let { configured ->
+    val configuredFile = file(configured)
+    val siblingFile = releaseSigningPropertiesFile.parentFile.resolve(configuredFile.name)
+    when {
+        siblingFile.isFile -> siblingFile
+        configuredFile.isFile -> configuredFile
+        else -> siblingFile
     }
 }
 
@@ -27,8 +39,8 @@ android {
         applicationId = "com.lispace.wzryncauto"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 22
+        versionName = "0.3.19"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -40,7 +52,7 @@ android {
     signingConfigs {
         if (releaseSigningPropertiesFile.isFile) {
             create("release") {
-                storeFile = file(requireNotNull(releaseSigningProperties.getProperty("storeFile")))
+                storeFile = requireNotNull(releaseStoreFile)
                 storePassword = requireNotNull(releaseSigningProperties.getProperty("storePassword"))
                 keyAlias = requireNotNull(releaseSigningProperties.getProperty("keyAlias"))
                 keyPassword = requireNotNull(releaseSigningProperties.getProperty("keyPassword"))
@@ -87,18 +99,22 @@ tasks.matching {
         check(releaseSigningPropertiesFile.isFile) {
             "缺少正式签名配置：${releaseSigningPropertiesFile.absolutePath}"
         }
+        check(releaseStoreFile?.isFile == true) {
+            "缺少正式签名密钥：${releaseStoreFile?.absolutePath ?: "<未配置>"}"
+        }
     }
+
 }
 
 dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.10.01"))
     implementation("androidx.activity:activity-compose:1.10.0")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.datastore:datastore-preferences:1.1.2")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
-    implementation("org.opencv:opencv:4.12.0")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")

@@ -42,4 +42,19 @@ class DeviceCommandsTest {
         assertTrue(RootScreenshotProvider.isPng(png))
         assertFalse(RootScreenshotProvider.isPng(byteArrayOf(1, 2, 3)))
     }
+
+    @Test
+    fun foregroundQuerySupportsModernAndLegacyActivityFields() {
+        val command = DeviceCommands.foregroundActivity()
+
+        assertTrue(command.contains("topResumedActivity"))
+        assertTrue(command.contains("mResumedActivity"))
+    }
+
+    @Test
+    fun buildsWakeAndKeyguardCommands() {
+        assertEquals("input keyevent KEYCODE_WAKEUP", DeviceCommands.wakeScreen())
+        assertEquals("wm dismiss-keyguard", DeviceCommands.dismissKeyguard())
+        assertEquals("input keyevent KEYCODE_BACK", DeviceCommands.pressBack())
+    }
 }

@@ -30,4 +30,13 @@ class RootDeviceController(
 
     suspend fun foregroundActivity(): String =
         executor.executeText(DeviceCommands.foregroundActivity()).stdout.trim()
+
+    suspend fun wakeScreen(): CommandResult =
+        executor.executeText(DeviceCommands.wakeScreen())
+
+    suspend fun dismissKeyguard(): CommandResult =
+        executor.executeText(DeviceCommands.dismissKeyguard())
+
+    suspend fun pressBack(): CommandResult =
+        executor.executeText(DeviceCommands.pressBack())
 }
