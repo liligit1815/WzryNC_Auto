@@ -1,256 +1,135 @@
-# 王者荣耀农场自动化工具
+# 王者荣耀自动务农APP
 
-通过 ADB、OpenCV 模板匹配和 RapidOCR，自动完成王者荣耀农场的启动、务农、成熟时间识别、定时等待与下一轮执行。
+## 项目介绍
 
-当前支持：
+WzryNCAuto 是一款在已取得 ROOT 权限的 Android 设备上运行的王者荣耀农场自动化工具，通过本机截图、中文文字识别、安全触控与定时唤醒完成重复务农流程。
 
-- 安卓实体手机与雷电模拟器
-- Windows、Linux
-- 1280×720、2400×1080，并可按逻辑坐标适配其他分辨率
-- 单设备自动选择，多设备显式指定
-- 普通亮度、ROOT 亮度 0/1、退出时恢复亮度
-- 游戏更新后的多模板、ROI 和有限尺度匹配
-- 失败现场自动保存
+当前版本为 `0.3.19`（`versionCode 22`），应用包名为 `com.lispace.wzryncauto`。
 
-## 工作流程
+## 功能特性
 
-```text
-检查设备与游戏状态
-        ↓
-启动王者荣耀并等待登录页
-        ↓
-关闭启动弹窗 → 点击开始游戏
-        ↓
-关闭大厅活动弹窗
-        ↓
-进入王者农场
-        ↓
-刷新站位并移动到雕像
-        ↓
-一键务农（收获 / 播种 / 浇水）
-        ↓
-识别收获信息与成熟时间
-        ↓
-计算下一次浇水时间
-        ↓
-退出游戏并等待唤醒
-```
+- 引导并检查通知、悬浮窗、精确闹钟、电池优化、厂商自启动与 ROOT 权限。
+- 通过悬浮球设置 1–99 轮或无限循环，支持开始、暂停、继续、停止和紧急停止。
+- 使用 ROOT 启动/停止王者荣耀，执行点击、滑动、返回、屏幕唤醒和非密码锁屏解除。
+- 自动处理登录页、更新或广告弹窗、大厅、王者农场入口、站位刷新和角色移动。
+- 连续识别“一键务农”文字与坐标，执行游戏内的一键收获、播种和浇水。
+- 解析收获经验、作物名称与数量，并识别土地状态和成熟时间。
+- 根据 5、60、480、960、1920 分钟作物周期计算后续浇水或成熟节点。
+- 使用系统精确闹钟和应用内计时双保险，并在重启、升级、时间或时区变化后恢复任务。
+- 在不可逆点击前持久化检查点，降低进程异常后重复点击的风险。
+- 支持保持亮度、系统最低亮度和 ROOT 极低亮度，并在停止或异常后恢复原亮度。
+- 保存有限数量的运行日志、OCR 样本和失败现场，便于定位识别问题。
 
-作物周期可能为 5、60、480、960、1920 分钟。完整周期包含四次浇水：种植时、周期的 `1/3`、`2/3` 和 `11/15`。每轮以本次一键务农的真实点击时刻重新计算下一次执行时间。
+兼容性会受游戏版本、活动弹窗、分辨率、系统字体、ROM 和 ROOT 实现影响，不承诺所有设备或后续游戏版本均可直接运行。
 
-## 项目结构
+## 技术架构
+
+- Kotlin `2.0.21`、Android Gradle Plugin `8.7.3`、Gradle `8.9`、JDK 17。
+- Jetpack Compose + Material 3 构建竖屏主界面，前台 `OverlayService` 提供悬浮控制与任务编排。
+- 最低 Android 9（API 28），目标 API 35，仅打包 `arm64-v8a`。
+- ML Kit 中文文字识别负责页面文字、收获信息和成熟时间识别。
+- MediaProjection JPEG 屏幕流为快速截图通道，ROOT `screencap -p` PNG 为无损复核与回退通道。
+- `su -c`、Android shell input 和 Activity Manager 负责游戏启停、触控、前台检查、唤醒与亮度控制。
+- SharedPreferences 保存运行检查点和不可逆动作边界，DataStore 保存作物批次与排程状态。
+- AlarmManager、BroadcastReceiver、wake lock 和前台服务共同完成跨轮次唤醒与异常恢复。
 
 ```text
-WzryNC_Auto/
-├── wzry_auto.py                 # 主程序
-├── start.bat                    # Windows 一键启动
-├── start.sh                     # Linux 一键启动
-├── monitor.sh                   # Linux 状态检查
-├── realtime_monitor.sh          # Linux 实时日志
-├── requirements.txt
-├── assets/
-│   ├── crop_cycle.json          # 当前作物周期
-│   ├── screenshots/             # 模板源截图
-│   └── templates/
-│       ├── *.png                # 1280×720 默认模板
-│       └── 2400x1080/*.png      # 2400×1080 专用模板
-├── scripts/
-│   ├── check_requirements.py    # 依赖版本检查
-│   └── run_with_log.py          # 跨平台终端与文件双路日志
-└── tests/
-    └── test_core.py             # 离线核心测试
+MainActivity（权限、自检、MediaProjection 授权）
+        │
+        ├── WzryHomeScreen / Theme
+        └── OverlayService（悬浮 UI 与总编排）
+                ├── EnterFarmAutomation（启动游戏并进入农场）
+                ├── FarmActionAutomation（移动、务农、收获、土地识别）
+                ├── RootAutomationRuntime
+                │       ├── ROOT 设备控制与安全触控
+                │       ├── MediaProjection / ROOT 截图
+                │       ├── ML Kit OCR
+                │       └── 弹窗与开始按钮视觉匹配
+                ├── RuntimeStateStore / FarmStateStore
+                ├── AutomationAlarmScheduler / Receiver
+                └── BrightnessController / BrightnessLeaseStore
 ```
 
-运行过程中会自动生成：
-
-- `assets/current.png`：最近一次设备截图
-- `diagnostics/`：关键步骤失败现场
-- `/tmp/wzry_run.log`：Linux 默认日志
-- `%TEMP%\wzry_run.log`：Windows 默认日志
-
-这些文件不会提交到 Git。
-
-## 环境要求
-
-- Python 3.11–3.13
-- Android platform-tools（ADB）
-- 已开启 USB 调试或无线调试的安卓设备
-- Windows 使用 PowerShell 5+ 完成多实例检查
-- ROOT 亮度模式需要设备已 ROOT
-
-Python 依赖：
+## 目录结构
 
 ```text
-opencv-python
-numpy
-rapidocr-onnxruntime
+WZRY_Auto/
+├── android-app/                 # Android APK 工程
+│   ├── app/src/main/            # Kotlin 主源码、Manifest、资源与运行模板
+│   ├── app/src/test/            # JVM 单元测试
+│   ├── app/src/androidTest/     # Android 仪器测试与测试输入
+│   └── gradle/wrapper/          # 固定 Gradle 版本的 Wrapper
+├── docs/
+│   ├── NEW_COMPUTER_RELEASE_BUILD.md # 新电脑首次构建指南
+│   └── RELEASE_BUILD_GUIDE.md        # Release 构建、签名和验签说明
+├── release-signing/             # 私有仓库内的正式签名材料
+├── scripts/                     # Android OCR 样本导出与准确率统计工具
+├── .gitignore
+└── README.md
 ```
 
-## Windows 一键启动
+## 使用说明
 
-1. 安装 Python，并勾选 `Add Python to PATH`。
-2. 安装 Android platform-tools，并将 ADB 加入 PATH。
-3. 连接手机或启动模拟器：
+### 环境要求
 
-```cmd
-adb devices
-```
+- Android 9 或更高版本。
+- `arm64-v8a` 设备。
+- Magisk 或其他可向应用提供 `su` 的 ROOT 环境。
+- 构建需要 JDK 17、Android SDK Platform 35、Build Tools 35.0.0。
+- 安装、仪器测试和设备排障需要 ADB。
 
-4. 双击 `start.bat`。
+### 构建 Debug APK
 
-PowerShell 中运行：
+Windows PowerShell：
 
 ```powershell
-.\start.bat
+cd android-app
+$env:JAVA_HOME = "C:\Program Files\Java\jdk-17"
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+./gradlew.bat testDebugUnitTest assembleDebug
 ```
 
-启动器会自动：
-
-- 创建或复用 `venv`
-- 检查并安装缺失/过旧的依赖
-- 阻止重复启动
-- 使用 Windows Terminal（可用时）
-- 将日志写入 `%TEMP%\wzry_run.log`
-
-## Linux 一键启动
+Linux/macOS：
 
 ```bash
-chmod +x start.sh
-./start.sh
+cd android-app
+export JAVA_HOME=/path/to/jdk-17
+export ANDROID_HOME=/path/to/android-sdk
+./gradlew testDebugUnitTest assembleDebug
 ```
 
-启动器会按以下顺序复用虚拟环境：
+Debug APK 输出到 `android-app/app/build/outputs/apk/debug/app-debug.apk`。
 
-1. `WZRY_VENV_DIR`
-2. `.venv`
-3. `venv`
-4. 新建 `.venv`
+私有仓库已包含正式签名材料，克隆后可直接构建 Release。新电脑首次配置见 [新电脑 Release 构建指南](docs/NEW_COMPUTER_RELEASE_BUILD.md)，完整验签与发布步骤见 [Release 构建指南](docs/RELEASE_BUILD_GUIDE.md)。
 
-Linux 状态检查：
+### 安装与运行
+
+1. 使用 ADB 安装自行构建并验签的 APK：`adb install -r app-debug.apk`。
+2. 打开应用，按顺序授予通知、悬浮窗、精确闹钟、忽略电池优化等权限，并在 ROOT 管理器中授权。
+3. 打开悬浮控制。允许录屏可启用 MediaProjection 快速截图；拒绝后应用会尝试使用 ROOT 截图。
+4. 启动王者荣耀，在悬浮面板中选择轮次或无限模式后开始任务。
+5. 首次运行建议选择单轮、保持设备解锁并观察完整流程；确认当前游戏版本和分辨率适配后再使用多轮模式。
+
+### 测试
 
 ```bash
-./monitor.sh
+cd android-app
+./gradlew testDebugUnitTest
+./gradlew connectedDebugAndroidTest   # 需要连接 Android 设备
 ```
 
-实时查看日志：
-
-```bash
-./realtime_monitor.sh
-```
-
-## 配置环境变量
-
-### 指定设备
-
-只有一个在线设备时会自动选择。多个设备同时在线时必须指定：
-
-Windows：
-
-```cmd
-set WZRY_DEVICE=192.168.1.100:5555
-start.bat
-```
-
-Linux：
-
-```bash
-WZRY_DEVICE=192.168.1.100:5555 ./start.sh
-```
-
-### 其他配置
-
-| 变量 | 作用 |
-|---|---|
-| `WZRY_DEVICE` | ADB 设备序列号、IP 或模拟器地址 |
-| `WZRY_DEFAULT_DEVICE` | 没有在线设备时尝试连接的默认无线设备 |
-| `WZRY_ADB` | 自定义 ADB 可执行文件路径 |
-| `WZRY_VENV_DIR` | 自定义虚拟环境目录 |
-| `WZRY_LOG_FILE` | 自定义日志路径 |
-| `WZRY_UNLOCK_PWD` | 锁屏密码；无密码时留空 |
-| `PYTHON_BIN` | Linux 创建虚拟环境所用的 Python |
-
-## 亮度模式
-
-启动时可以选择：
-
-```text
-Y - 普通模式，关闭自动亮度并设置为 1
-R - ROOT 模式，将背光节点设置为 0
-1 - ROOT 模式，将背光节点设置为 1
-N - 不修改亮度
-```
-
-正常退出、异常和 Ctrl+C 中断都会尝试退出游戏并恢复原始亮度。
-
-## 模板匹配
-
-当前主要阈值：
-
-| 目标 | 阈值 |
-|---|---:|
-| 开始游戏 | 0.75 |
-| 王者农场入口 | 0.75 |
-| 常规弹窗关闭 | 0.90 |
-| 赛事弹窗关闭 | 0.78 |
-| 刷新站位 | 0.60 |
-| 一键务农 | 0.75 |
-| 收获继续 | 0.85 |
-
-匹配不只依赖分数，还会限制搜索区域和模板尺度，避免将大厅图标误认为弹窗关闭按钮。游戏更新导致 UI 变化时，应优先根据失败截图更新模板，不建议直接大幅降低阈值。
-
-## 故障诊断
-
-关键步骤失败时会创建：
-
-```text
-diagnostics/YYYYMMDD_HHMMSS_step_name/
-├── screenshot.png
-└── context.json
-```
-
-常用检查：
-
-```bash
-adb devices -l
-tail -100 /tmp/wzry_run.log
-./monitor.sh
-```
-
-如果作物周期记录错误，可删除：
-
-```text
-assets/crop_cycle.json
-```
-
-脚本会在下次确认新种植时重新计算并保存周期。
-
-## 测试
-
-Linux：
-
-```bash
-venv/bin/python -m unittest discover -s tests -v
-bash -n start.sh monitor.sh realtime_monitor.sh
-```
-
-Windows：
-
-```cmd
-venv\Scripts\python -m unittest discover -s tests -v
-```
-
-离线测试不会启动游戏或操作手机。实机验证结束后应确认游戏进程已退出：
-
-```bash
-adb -s DEVICE shell pidof com.tencent.tmgp.sgame
-```
-
-无输出表示游戏进程不存在。
+仓库清理后已验证 157 项 Android JVM 测试全部通过，Debug 与正式签名 Release APK 均打包成功。仪器测试和真机端到端测试仍需连接目标设备执行。
 
 ## 注意事项
 
-- 游戏更新、活动弹窗和主题皮肤都可能改变模板匹配结果。
-- 不要同时运行多个脚本操作同一设备。
-- 无法确认页面状态时，脚本会保存现场并退出本轮，而不是盲目点击。
-- `assets/screenshots/` 是后续模板适配的重要源素材，请勿当作运行时缓存删除。
-- ROOT 背光节点具有设备差异，使用前应在目标设备上验证。
+- 本项目会自动操作网络游戏。使用前应自行确认并遵守游戏用户协议、平台规则及当地法律；账号处罚等后果由使用者自行承担。
+- ROOT 和系统级命令可能影响设备安全与稳定性。不要在不了解风险的设备上授权，也不要向第三方提供 ROOT、锁屏或签名凭据。
+- 多轮无人值守任务无法绕过密码锁屏；建议保持屏幕常亮，或在单轮启动前手动解锁。
+- 游戏 UI、活动弹窗或分辨率变化可能导致 OCR/视觉识别失效。出现异常点击、连续失败或版本更新后应立即停止并重新测试。
+- 私有仓库内含正式签名私钥和密码配置；不得把仓库改为公开、创建公开 Fork、上传到公共制品或向无关人员授权。
+- 即使仓库内已有签名材料，仍必须保留至少两份加密离线备份，避免仓库损坏或账号失效后无法继续发布。
+- 当前没有证据证明 v0.3.19 已完成长时间真机验收；JVM 测试通过不能替代目标设备验证。
+
+## 开源协议
+
+仓库当前未提供 `LICENSE` 文件，因此尚未明确授予复制、修改、分发或商业使用权。在维护者选择并添加正式开源许可证前，本项目不能按常见开源许可直接复用。
