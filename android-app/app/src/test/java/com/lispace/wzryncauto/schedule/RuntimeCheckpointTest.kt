@@ -32,7 +32,7 @@ class RuntimeCheckpointTest {
     }
 
     @Test
-    fun `failure retry keeps the logical round and starts a fresh action attempt`() {
+    fun `failure retry preserves the sent action and exact target for observation recovery`() {
         val checkpoint = RuntimeCheckpoint(
             taskId = "task",
             phase = RuntimePhase.RUNNING,
@@ -42,6 +42,8 @@ class RuntimeCheckpointTest {
             actionRound = 4,
             pendingAction = PendingFarmAction.ONE_CLICK_CONFIRMED,
             consecutiveFailures = 1,
+            actionSentAtEpochMs = 500L,
+            targetAtEpochMs = 400L,
         )
 
         val retry = checkpoint.scheduleFailureRetry(
@@ -55,11 +57,48 @@ class RuntimeCheckpointTest {
         assertEquals(8L, retry.generation)
         assertEquals(61_000L, retry.nextRunAtEpochMs)
         assertEquals(FAILURE_RETRY_WAKE_REASON, retry.wakeReason)
-        assertEquals(0, retry.actionRound)
-        assertEquals(PendingFarmAction.NONE, retry.pendingAction)
+        assertEquals(4, retry.actionRound)
+        assertEquals(PendingFarmAction.ONE_CLICK_CONFIRMED, retry.pendingAction)
+        assertEquals(500L, retry.actionSentAtEpochMs)
+        assertEquals(400L, retry.targetAtEpochMs)
         assertEquals(2, retry.consecutiveFailures)
         assertEquals("识别失败", retry.lastError)
         assertTrue(retry.hasPendingTask)
-        assertFalse(retry.hasAlreadySentOneClick(4))
+        assertTrue(retry.hasAlreadySentOneClick(4))
+    }
+
+    @Test
+    fun `maturity harvest send boundary also blocks replaying the primary action`() {
+        for (action in listOf(
+            PendingFarmAction.MATURITY_HARVEST_SENT,
+            PendingFarmAction.MATURITY_HARVEST_CONFIRMED,
+        )) {
+            val retry = RuntimeCheckpoint(
+                taskId = "task", actionRound = 1, pendingAction = action,
+                actionSentAtEpochMs = 1_000L,
+            ).scheduleFailureRetry(62_000L, "读取失败", 2_000L)
+            assertTrue(retry.hasAlreadySentOneClick(1))
+            assertEquals(action, retry.pendingAction)
+            assertEquals(1_000L, retry.actionSentAtEpochMs)
+        }
+    }
+
+    @Test
+    fun `failure before any input can safely retry the primary action`() {
+        val retry = RuntimeCheckpoint(taskId = "task")
+            .scheduleFailureRetry(61_000L, "进场失败", 1_000L)
+        assertFalse(retry.hasAlreadySentOneClick(1))
+    }
+
+    @Test
+    fun `retry retains maturity purpose so watering cooldown cannot delay harvest`() {
+        val checkpoint = RuntimeCheckpoint(
+            taskId = "task", wakeReason = WakeReason.MATURITY.name,
+            targetAtEpochMs = 300_000L, harvestObserved = true,
+        )
+        val retry = checkpoint.scheduleFailureRetry(240_000L, "进场失败", 180_000L)
+        assertEquals(WakeReason.MATURITY.name, retry.wakeReason)
+        assertEquals(300_000L, retry.targetAtEpochMs)
+        assertTrue(retry.harvestObserved)
     }
 }

@@ -39,6 +39,28 @@ class AutomationTransitionPolicyTest {
     }
 
     @Test
+    fun permitsObservationRecoveryThroughItsExplicitState() {
+        assertTrue(
+            AutomationTransitionPolicy.canTransition(
+                AutomationState.MOVING_TO_STATUE,
+                AutomationState.RECOVERING_FARM_ACTION,
+            ),
+        )
+        assertTrue(
+            AutomationTransitionPolicy.canTransition(
+                AutomationState.RECOVERING_FARM_ACTION,
+                AutomationState.MOVING_TO_FARMLAND,
+            ),
+        )
+        assertTrue(
+            AutomationTransitionPolicy.canTransition(
+                AutomationState.VERIFYING_FARMLAND,
+                AutomationState.MOVING_TO_STATUE,
+            ),
+        )
+    }
+
+    @Test
     fun containsCalibrated2400MovementSequence() {
         val profile = MovementProfiles.requireFor(2400, 1080)
         assertEquals(SwipeGesture(430, 755, 305, 538, 1500), profile.spawnToStatue)

@@ -5,210 +5,300 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Duration
 import java.time.LocalDateTime
 
 class FarmScheduleCalculatorTest {
+    private val start = LocalDateTime.of(2026, 9, 22, 10, 0)
+    private val cycles = listOf(5, 60, 480, 960, 1920)
+
     @Test
-    fun resolvesCrossDayMaturity() {
-        val first = time(2026, 7, 27, 23, 58)
-        val reading = MaturityReading.Time(0, 2, false, "00:02成熟")
-        assertEquals(
-            time(2026, 7, 28, 0, 2),
-            FarmScheduleCalculator.resolveObservedMaturity(reading, first),
-        )
+    fun allCropCyclesFollowFourIdealWateringsWithoutReclassifying() {
+        for (cycle in cycles) {
+            val total = cycle * 60L
+            var lastWater = start
+            var maturity = start.plusSeconds(total * 11L / 12L)
+            for (offset in listOf(total / 3L, total * 2L / 3L, total * 11L / 15L)) {
+                val schedule = FarmScheduleCalculator.calculate(
+                    firstWaterAt = lastWater,
+                    observedMaturityAt = maturity,
+                    now = lastWater.plusSeconds(1),
+                    storedCycleMinutes = cycle,
+                    batchStartedAt = start,
+                    lastConfirmedWateringAt = lastWater,
+                )
+                val next = start.plusSeconds(offset)
+                assertEquals("cycle=$cycle offset=$offset", next, schedule.targetAt)
+                assertEquals(WakeReason.WATERING, schedule.reason)
+                assertEquals(cycle, schedule.cycleMinutes)
+                assertFalse(schedule.cycleEstimated)
+                assertEquals(start, schedule.batchStartedAt)
+                val elapsed = Duration.between(lastWater, next).seconds.coerceAtMost(total / 3L)
+                maturity = maturity.minusSeconds(elapsed / 4L)
+                lastWater = next
+            }
+            assertEquals("fourth watering matures cycle=$cycle", lastWater, maturity)
+        }
     }
 
     @Test
-    fun resolvesExplicitDayAfterMaturity() {
-        val first = time(2026, 7, 27, 10, 0)
-        val reading = MaturityReading.Time(
-            hour = 8,
-            minute = 30,
-            tomorrowHint = true,
-            rawText = "后天08:30成熟",
-            dayOffset = 2,
-        )
-
-        assertEquals(
-            time(2026, 7, 29, 8, 30),
-            FarmScheduleCalculator.resolveObservedMaturity(reading, first),
-        )
+    fun identifiesFreshBatchFromFirstWaterReductionForEveryCycle() {
+        for (cycle in cycles) {
+            val schedule = FarmScheduleCalculator.calculate(
+                firstWaterAt = start,
+                observedMaturityAt = start.plusSeconds(cycle * 60L * 11L / 12L).minusSeconds(37),
+                now = start.plusSeconds(15),
+                freshBatch = true,
+            )
+            assertEquals(cycle, schedule.cycleMinutes)
+            assertFalse(schedule.cycleEstimated)
+        }
     }
 
     @Test
-    fun anchorsExplicitDayOffsetToOcrDateAcrossMidnight() {
-        val observedAt = time(2026, 7, 28, 0, 1)
-        val reading = MaturityReading.Time(
-            hour = 8,
-            minute = 30,
-            tomorrowHint = true,
-            rawText = "明天08:30成熟",
-            dayOffset = 1,
-            observedAt = observedAt,
-        )
-
-        assertEquals(
-            time(2026, 7, 29, 8, 30),
-            FarmScheduleCalculator.resolveObservedMaturity(
-                reading,
-                firstWaterAt = time(2026, 7, 27, 23, 59),
-            ),
-        )
-    }
-
-    @Test
-    fun resolvesRelativeMaturityFromOcrObservationTime() {
-        val observedAt = time(2026, 7, 27, 23, 30, 12)
-        val reading = MaturityReading.Time(
-            hour = 1,
-            minute = 45,
-            tomorrowHint = true,
-            rawText = "2小时15分钟后成熟",
-            dayOffset = 1,
-            relativeMinutes = 135,
-            observedAt = observedAt,
-        )
-
-        assertEquals(
-            time(2026, 7, 28, 1, 45, 12),
-            FarmScheduleCalculator.resolveObservedMaturity(
-                reading,
-                firstWaterAt = time(2026, 7, 27, 23, 28),
-            ),
-        )
-    }
-
-    @Test
-    fun neverSchedulesAfterOcrMaturity() {
-        val first = time(2026, 7, 27, 11, 55, 28)
-        val maturity = time(2026, 7, 27, 12, 0)
+    fun freshBatchReplacesPreviousCropAndBatchStart() {
         val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = first,
-            observedMaturityAt = maturity,
-            now = first,
-            storedCycleMinutes = 60,
-            batchStartedAt = time(2026, 7, 27, 11, 47, 8),
-        )
-        assertEquals(WakeReason.MATURITY, schedule.reason)
-        assertEquals(maturity, schedule.targetAt)
-        assertFalse(schedule.targetAt.isAfter(maturity))
-    }
-
-    @Test
-    fun selectsUpcomingWateringBeforeMaturity() {
-        val first = time(2026, 7, 27, 10, 0)
-        val maturity = time(2026, 7, 27, 10, 55)
-        val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = first,
-            observedMaturityAt = maturity,
-            now = time(2026, 7, 27, 10, 5),
-            storedCycleMinutes = 60,
-            batchStartedAt = first,
-        )
-        assertEquals(WakeReason.WATERING, schedule.reason)
-        assertEquals(time(2026, 7, 27, 10, 20), schedule.targetAt)
-        assertEquals(time(2026, 7, 27, 10, 18), schedule.wakeAt)
-        assertTrue(schedule.targetAt.isBefore(maturity))
-    }
-
-    @Test
-    fun skipsWateringWhenItsEarlyWakeWindowAlreadyPassed() {
-        val first = time(2026, 7, 27, 10, 0)
-        val maturity = time(2026, 7, 27, 10, 55)
-        val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = first,
-            observedMaturityAt = maturity,
-            now = time(2026, 7, 27, 10, 19),
-            storedCycleMinutes = 60,
-            batchStartedAt = first,
-        )
-
-        assertEquals(time(2026, 7, 27, 10, 40), schedule.targetAt)
-        assertEquals(time(2026, 7, 27, 10, 38), schedule.wakeAt)
-    }
-
-    @Test
-    fun rejectsIncompatibleFiveMinuteStateForMidBatchCrop() {
-        val first = time(2026, 7, 28, 10, 36)
-        val maturity = time(2026, 7, 28, 11, 1)
-        val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = first,
-            observedMaturityAt = maturity,
-            now = time(2026, 7, 28, 10, 37),
-            storedCycleMinutes = 5,
-            batchStartedAt = first,
-        )
-
-        assertEquals(60, schedule.cycleMinutes)
-    }
-
-    @Test
-    fun keepsSixtyMinuteCropAcrossMinuteOnlyOcrBoundary() {
-        val first = time(2026, 7, 28, 17, 36, 52)
-        val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = first,
-            observedMaturityAt = time(2026, 7, 28, 18, 33),
-            now = time(2026, 7, 28, 17, 37, 29),
-        )
-
-        assertEquals(60, schedule.cycleMinutes)
-        assertEquals(WakeReason.WATERING, schedule.reason)
-        assertEquals(time(2026, 7, 28, 17, 56, 52), schedule.targetAt)
-        assertEquals(time(2026, 7, 28, 17, 54, 52), schedule.wakeAt)
-    }
-
-    @Test
-    fun classifiesObservedFourHundredFortyMinuteGrapeAsEightHourCrop() {
-        val first = time(2026, 8, 10, 14, 27)
-        val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = first,
-            observedMaturityAt = time(2026, 8, 10, 21, 47),
-            now = first.plusMinutes(1),
-        )
-
-        assertEquals(480, schedule.cycleMinutes)
-        assertEquals(time(2026, 8, 10, 17, 7), schedule.targetAt)
-    }
-
-    @Test
-    fun correctsPersistedLongCycleUsingCurrentOcrRemainder() {
-        val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = time(2026, 7, 28, 17, 54, 32),
-            observedMaturityAt = time(2026, 7, 28, 18, 28),
-            now = time(2026, 7, 28, 17, 55, 13),
+            firstWaterAt = start,
+            observedMaturityAt = start.plusMinutes(55),
+            now = start,
             storedCycleMinutes = 480,
-            batchStartedAt = time(2026, 7, 28, 17, 36, 52),
+            batchStartedAt = start.minusHours(5),
+            freshBatch = true,
         )
-
         assertEquals(60, schedule.cycleMinutes)
-        assertEquals(WakeReason.WATERING, schedule.reason)
-        assertEquals(time(2026, 7, 28, 18, 16, 52), schedule.targetAt)
-        assertEquals(time(2026, 7, 28, 18, 14, 52), schedule.wakeAt)
+        assertEquals(start, schedule.batchStartedAt)
+        assertFalse(schedule.cycleEstimated)
     }
 
     @Test
-    fun schedulesClickFiveSecondsAfterTargetWithNegativeSafetyMargin() {
-        val target = time(2026, 7, 30, 12, 0)
-        val measuredSecondsToClick = 66L
-        val negativeSafetyMarginSeconds = -5L
+    fun unrecognizedFreshRemainderIsStillMarkedEstimated() {
         val schedule = FarmScheduleCalculator.calculate(
-            firstWaterAt = time(2026, 7, 30, 11, 55),
-            observedMaturityAt = target,
-            now = time(2026, 7, 30, 11, 56),
-            batchStartedAt = time(2026, 7, 30, 11, 2),
-            wakeLeadSeconds = measuredSecondsToClick + negativeSafetyMarginSeconds,
+            firstWaterAt = start,
+            observedMaturityAt = start.plusMinutes(30),
+            now = start,
+            freshBatch = true,
         )
-
-        assertEquals(time(2026, 7, 30, 11, 58, 59), schedule.wakeAt)
-        assertEquals(target.plusSeconds(5), schedule.wakeAt.plusSeconds(measuredSecondsToClick))
+        assertEquals(60, schedule.cycleMinutes)
+        assertTrue(schedule.cycleEstimated)
     }
 
-    private fun time(
-        year: Int,
-        month: Int,
-        day: Int,
-        hour: Int,
-        minute: Int,
-        second: Int = 0,
-    ): LocalDateTime = LocalDateTime.of(year, month, day, hour, minute, second)
+    @Test
+    fun unknownMidBatchUsesContainingCycleAndMarksItEstimated() {
+        val schedule = FarmScheduleCalculator.calculate(
+            firstWaterAt = start,
+            observedMaturityAt = start.plusMinutes(25),
+            now = start,
+        )
+        assertEquals(60, schedule.cycleMinutes)
+        assertTrue(schedule.cycleEstimated)
+    }
+
+    @Test
+    fun keepsStoredLongCycleEvenWithShortRemainder() {
+        val batch = start.minusHours(7)
+        val schedule = FarmScheduleCalculator.calculate(
+            firstWaterAt = start,
+            observedMaturityAt = start.plusMinutes(25),
+            now = start,
+            storedCycleMinutes = 480,
+            batchStartedAt = batch,
+        )
+        assertEquals(480, schedule.cycleMinutes)
+        assertEquals(batch, schedule.batchStartedAt)
+        assertFalse(schedule.cycleEstimated)
+    }
+
+    @Test
+    fun doesNotPromotePersistedEstimateToConfirmedCycle() {
+        assertTrue(schedule(storedCycleEstimated = true).cycleEstimated)
+    }
+
+    @Test
+    fun earlyArrivalKeepsUpcomingNodeWhenWakeWindowHasPassed() {
+        val result = schedule(now = start.plusMinutes(19))
+        assertEquals(start.plusMinutes(20), result.targetAt)
+        assertEquals(start.plusMinutes(19), result.wakeAt)
+    }
+
+    @Test
+    fun lateArrivalKeepsOverdueWateringForImmediateWake() {
+        val result = schedule(now = start.plusMinutes(22))
+        assertEquals(start.plusMinutes(20), result.targetAt)
+        assertEquals(start.plusMinutes(22), result.wakeAt)
+        assertEquals(WakeReason.WATERING, result.reason)
+    }
+
+    @Test
+    fun delayedWateringShiftsNextFullWateringFromItsConfirmedTime() {
+        val result = schedule(
+            water = start.plusMinutes(22),
+            maturity = start.plusMinutes(50),
+            now = start.plusMinutes(23),
+        )
+        assertEquals(start.plusMinutes(42), result.targetAt)
+        assertEquals(start.plusMinutes(40), result.watering3At)
+    }
+
+    @Test
+    fun finalWateringSolvesRemainingTimeAfterEarlierDelay() {
+        val result = schedule(
+            water = start.plusMinutes(42),
+            maturity = start.plusMinutes(45),
+            now = start.plusMinutes(42).plusSeconds(10),
+        )
+        assertEquals(start.plusMinutes(44).plusSeconds(24), result.targetAt)
+        assertEquals(WakeReason.WATERING, result.reason)
+    }
+
+    @Test
+    fun extraEffectiveWateringStartsNewFullWaterInterval() {
+        val result = schedule(
+            water = start.plusMinutes(10),
+            maturity = start.plusMinutes(52).plusSeconds(30),
+            now = start.plusMinutes(11),
+        )
+        assertEquals(start.plusMinutes(30), result.targetAt)
+    }
+
+    @Test
+    fun ineffectiveAttemptOnlyAppliesMinimumInterval() {
+        val result = schedule(
+            water = start.plusMinutes(10),
+            attempt = start.plusMinutes(29),
+            maturity = start.plusMinutes(52).plusSeconds(30),
+            now = start.plusMinutes(29).plusSeconds(10),
+        )
+        assertEquals(start.plusMinutes(31), result.targetAt)
+    }
+
+    @Test
+    fun selectsNaturalMaturityIfMinimumIntervalCannotBeMet() {
+        val result = schedule(maturity = start.plusSeconds(90))
+        assertEquals(start.plusSeconds(90), result.targetAt)
+        assertEquals(WakeReason.MATURITY, result.reason)
+        assertEquals(null, result.nextWateringAt)
+    }
+
+    @Test
+    fun minuteOnlyMaturityAlreadyDueNeverSchedulesWateringOrTomorrow() {
+        val result = schedule(maturity = start, now = start.plusSeconds(20))
+        assertEquals(start, result.targetAt)
+        assertEquals(start.plusSeconds(20), result.wakeAt)
+        assertEquals(WakeReason.MATURITY, result.reason)
+    }
+
+    @Test
+    fun roundsFinalWateringUpIncludingFractionalSeconds() {
+        val result = schedule(maturity = start.plusSeconds(181).plusNanos(900_000_000))
+        assertEquals(start.plusSeconds(146), result.targetAt)
+        assertFalse(result.targetAt.isAfter(result.observedMaturityAt))
+    }
+
+    @Test
+    fun minutePrecisionProtectsFinalWateringWithoutChangingObservation() {
+        val maturity = start.plusMinutes(45)
+        val result = schedule(
+            water = start.plusMinutes(40), maturity = maturity,
+            now = start.plusMinutes(41), precision = 59,
+        )
+        assertEquals(maturity, result.observedMaturityAt)
+        assertEquals(start.plusMinutes(44).plusSeconds(48), result.targetAt)
+    }
+
+    @Test
+    fun minutePrecisionDoesNotChangeFreshCropClassification() {
+        for (cycle in cycles) {
+            val result = FarmScheduleCalculator.calculate(
+                firstWaterAt = start,
+                observedMaturityAt = start.plusSeconds(cycle * 60L * 11L / 12L - 50L),
+                now = start,
+                freshBatch = true,
+                maturityPrecisionSeconds = 59,
+            )
+            assertEquals(cycle, result.cycleMinutes)
+            assertFalse(result.cycleEstimated)
+        }
+    }
+
+    @Test
+    fun wakeLeadChangesStartupButNotWateringTarget() {
+        val early = schedule(wakeLead = 120)
+        val later = schedule(wakeLead = 61)
+        assertEquals(early.targetAt, later.targetAt)
+        assertEquals(start.plusMinutes(18), early.wakeAt)
+        assertEquals(start.plusMinutes(18).plusSeconds(59), later.wakeAt)
+    }
+
+    @Test
+    fun resolvesImplicitCrossDayMaturity() {
+        val observed = start.withHour(23).withMinute(58)
+        val reading = MaturityReading.Time(0, 2, false, "00:02成熟", observedAt = observed)
+        assertEquals(
+            start.plusDays(1).withHour(0).withMinute(2),
+            FarmScheduleCalculator.resolveObservedMaturity(reading, observed),
+        )
+    }
+
+    @Test
+    fun keepsMaturityWithinCurrentMinuteOnSameDay() {
+        val observed = start.plusSeconds(50)
+        val reading = MaturityReading.Time(10, 0, false, "10:00成熟", observedAt = observed)
+        assertEquals(start, FarmScheduleCalculator.resolveObservedMaturity(reading, observed))
+    }
+
+    @Test
+    fun explicitTodayInPastIsNeverShiftedToTomorrow() {
+        val observed = start.plusHours(1)
+        val reading = MaturityReading.Time(10, 0, false, "今天10:00成熟", observedAt = observed)
+        assertEquals(start, FarmScheduleCalculator.resolveObservedMaturity(reading, observed))
+    }
+
+    @Test
+    fun anchorsDayHintsToObservationDateEvenWhenClickWasYesterday() {
+        val observed = start.plusDays(1).withHour(0).withMinute(1)
+        for (offset in 1..2) {
+            val reading = MaturityReading.Time(
+                8, 30, true, if (offset == 1) "明天08:30成熟" else "后天08:30成熟",
+                dayOffset = offset, observedAt = observed,
+            )
+            assertEquals(
+                observed.plusDays(offset.toLong()).withHour(8).withMinute(30),
+                FarmScheduleCalculator.resolveObservedMaturity(reading, start.withHour(23).withMinute(59)),
+            )
+        }
+    }
+
+    @Test
+    fun resolvesRelativeMaturityFromObservationRatherThanClick() {
+        val observed = start.withHour(23).withMinute(30).withSecond(12)
+        val reading = MaturityReading.Time(
+            1, 45, true, "2小时15分钟后成熟",
+            dayOffset = 1, relativeMinutes = 135, observedAt = observed,
+        )
+        assertEquals(
+            observed.plusMinutes(135),
+            FarmScheduleCalculator.resolveObservedMaturity(reading, observed.minusMinutes(2)),
+        )
+    }
+
+    private fun schedule(
+        water: LocalDateTime = start,
+        attempt: LocalDateTime = water,
+        maturity: LocalDateTime = start.plusMinutes(55),
+        now: LocalDateTime = water,
+        wakeLead: Long = 120,
+        storedCycleEstimated: Boolean = false,
+        precision: Long = 0,
+    ): FarmSchedule = FarmScheduleCalculator.calculate(
+        firstWaterAt = attempt,
+        observedMaturityAt = maturity,
+        now = now,
+        storedCycleMinutes = 60,
+        batchStartedAt = start,
+        wakeLeadSeconds = wakeLead,
+        lastConfirmedWateringAt = water,
+        lastAttemptAt = attempt,
+        storedCycleEstimated = storedCycleEstimated,
+        maturityPrecisionSeconds = precision,
+    )
 }

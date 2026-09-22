@@ -19,6 +19,8 @@ enum class PendingFarmAction {
     ONE_CLICK_CONFIRMED,
     HARVEST_CONTINUE_SENT,
     HARVEST_CONTINUE_CONFIRMED,
+    MATURITY_HARVEST_SENT,
+    MATURITY_HARVEST_CONFIRMED,
 }
 
 data class RuntimeCheckpoint(
@@ -35,6 +37,9 @@ data class RuntimeCheckpoint(
     val consecutiveFailures: Int = 0,
     val lastError: String? = null,
     val updatedAtEpochMs: Long = 0,
+    val targetAtEpochMs: Long? = null,
+    val actionSentAtEpochMs: Long? = null,
+    val harvestObserved: Boolean = false,
 ) {
     val hasPendingTask: Boolean
         get() = taskId != null && phase in setOf(
@@ -50,11 +55,13 @@ data class RuntimeCheckpoint(
             PendingFarmAction.ONE_CLICK_CONFIRMED,
             PendingFarmAction.HARVEST_CONTINUE_SENT,
             PendingFarmAction.HARVEST_CONTINUE_CONFIRMED,
+            PendingFarmAction.MATURITY_HARVEST_SENT,
+            PendingFarmAction.MATURITY_HARVEST_CONFIRMED,
         )
 
     /**
-     * Starts a fresh attempt of the current logical round after the failed
-     * attempt has been stopped and the game process has been force-stopped.
+     * Retry observation after an uncertain input without sending it again.
+     * Only a completed round can release the durable action boundary.
      */
     fun scheduleFailureRetry(
         triggerAtEpochMs: Long,
@@ -67,9 +74,7 @@ data class RuntimeCheckpoint(
             phase = RuntimePhase.WAITING_ALARM,
             generation = generation + 1,
             nextRunAtEpochMs = triggerAtEpochMs,
-            wakeReason = FAILURE_RETRY_WAKE_REASON,
-            actionRound = 0,
-            pendingAction = PendingFarmAction.NONE,
+            wakeReason = wakeReason ?: FAILURE_RETRY_WAKE_REASON,
             consecutiveFailures = consecutiveFailures + 1,
             lastError = reason.take(MAX_ERROR_LENGTH),
             updatedAtEpochMs = nowEpochMs,
@@ -108,6 +113,11 @@ class RuntimeStateStore(context: Context) {
         consecutiveFailures = preferences.getInt(KEY_CONSECUTIVE_FAILURES, 0),
         lastError = preferences.getString(KEY_LAST_ERROR, null),
         updatedAtEpochMs = preferences.getLong(KEY_UPDATED_AT, 0),
+        targetAtEpochMs = preferences.getLong(KEY_TARGET_AT, NO_TIME)
+            .takeUnless { it == NO_TIME },
+        actionSentAtEpochMs = preferences.getLong(KEY_ACTION_SENT_AT, NO_TIME)
+            .takeUnless { it == NO_TIME },
+        harvestObserved = preferences.getBoolean(KEY_HARVEST_OBSERVED, false),
     )
 
     @Synchronized
@@ -138,7 +148,6 @@ class RuntimeStateStore(context: Context) {
         current.copy(
             phase = RuntimePhase.RUNNING,
             nextRunAtEpochMs = null,
-            wakeReason = null,
             actionRound = if (current.actionRound == round) round else 0,
             pendingAction = if (current.actionRound == round) {
                 current.pendingAction
@@ -165,6 +174,7 @@ class RuntimeStateStore(context: Context) {
             current.copy(
                 actionRound = round,
                 pendingAction = PendingFarmAction.ONE_CLICK_SENT,
+                actionSentAtEpochMs = nowEpochMs,
                 updatedAtEpochMs = nowEpochMs,
             ),
         )
@@ -181,6 +191,49 @@ class RuntimeStateStore(context: Context) {
         require(current.pendingAction == PendingFarmAction.ONE_CLICK_SENT)
         current.copy(
             pendingAction = PendingFarmAction.ONE_CLICK_CONFIRMED,
+            actionSentAtEpochMs = nowEpochMs,
+            updatedAtEpochMs = nowEpochMs,
+        )
+    }
+
+    @Synchronized
+    fun markHarvestObserved(expectedTaskId: String, round: Int) = update(expectedTaskId) { current ->
+        require(current.hasAlreadySentOneClick(round))
+        current.copy(harvestObserved = true)
+    }
+
+    @Synchronized
+    fun markMaturityHarvestSendIntent(
+        expectedTaskId: String,
+        round: Int,
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        val current = requireTask(expectedTaskId)
+        check(current.hasAlreadySentOneClick(round))
+        if (current.pendingAction in setOf(
+                PendingFarmAction.MATURITY_HARVEST_SENT,
+                PendingFarmAction.MATURITY_HARVEST_CONFIRMED,
+            )
+        ) return false
+        write(current.copy(
+            pendingAction = PendingFarmAction.MATURITY_HARVEST_SENT,
+            actionSentAtEpochMs = nowEpochMs,
+            updatedAtEpochMs = nowEpochMs,
+        ))
+        return true
+    }
+
+    @Synchronized
+    fun markMaturityHarvestConfirmed(
+        expectedTaskId: String,
+        round: Int,
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ) = update(expectedTaskId) { current ->
+        require(current.actionRound == round)
+        require(current.pendingAction == PendingFarmAction.MATURITY_HARVEST_SENT)
+        current.copy(
+            pendingAction = PendingFarmAction.MATURITY_HARVEST_CONFIRMED,
+            actionSentAtEpochMs = nowEpochMs,
             updatedAtEpochMs = nowEpochMs,
         )
     }
@@ -196,6 +249,8 @@ class RuntimeStateStore(context: Context) {
             completedRounds = completedRounds,
             pendingAction = PendingFarmAction.NONE,
             actionRound = 0,
+            actionSentAtEpochMs = null,
+            harvestObserved = false,
             consecutiveFailures = 0,
             lastError = null,
             updatedAtEpochMs = nowEpochMs,
@@ -208,13 +263,24 @@ class RuntimeStateStore(context: Context) {
         triggerAtEpochMs: Long,
         wakeReason: String,
         nowEpochMs: Long = System.currentTimeMillis(),
+        targetAtEpochMs: Long? = null,
+        completedRound: Int? = null,
     ): RuntimeCheckpoint = update(expectedTaskId) { current ->
         require(triggerAtEpochMs >= nowEpochMs)
+        require(completedRound == null || completedRound == current.completedRounds + 1)
         current.copy(
             phase = RuntimePhase.WAITING_ALARM,
             generation = current.generation + 1,
             nextRunAtEpochMs = triggerAtEpochMs,
             wakeReason = wakeReason,
+            targetAtEpochMs = targetAtEpochMs,
+            completedRounds = completedRound ?: current.completedRounds,
+            pendingAction = if (completedRound != null) PendingFarmAction.NONE else current.pendingAction,
+            actionRound = if (completedRound != null) 0 else current.actionRound,
+            actionSentAtEpochMs = if (completedRound != null) null else current.actionSentAtEpochMs,
+            harvestObserved = if (completedRound != null) false else current.harvestObserved,
+            consecutiveFailures = if (completedRound != null) 0 else current.consecutiveFailures,
+            lastError = if (completedRound != null) null else current.lastError,
             updatedAtEpochMs = nowEpochMs,
         )
     }
@@ -237,13 +303,19 @@ class RuntimeStateStore(context: Context) {
     fun markCompleted(
         expectedTaskId: String,
         nowEpochMs: Long = System.currentTimeMillis(),
+        completedRound: Int? = null,
     ) = update(expectedTaskId) { current ->
+        require(completedRound == null || completedRound == current.completedRounds + 1)
         current.copy(
             phase = RuntimePhase.COMPLETED,
+            completedRounds = completedRound ?: current.completedRounds,
             nextRunAtEpochMs = null,
             wakeReason = null,
             pendingAction = PendingFarmAction.NONE,
             actionRound = 0,
+            actionSentAtEpochMs = null,
+            targetAtEpochMs = null,
+            harvestObserved = false,
             updatedAtEpochMs = nowEpochMs,
         )
     }
@@ -258,7 +330,6 @@ class RuntimeStateStore(context: Context) {
         current.copy(
             phase = if (recoverable) RuntimePhase.RECOVERY_REQUIRED else RuntimePhase.ERROR,
             nextRunAtEpochMs = null,
-            wakeReason = null,
             consecutiveFailures = current.consecutiveFailures + 1,
             lastError = reason.take(MAX_ERROR_LENGTH),
             updatedAtEpochMs = nowEpochMs,
@@ -314,13 +385,16 @@ class RuntimeStateStore(context: Context) {
                 .putInt(KEY_CONSECUTIVE_FAILURES, value.consecutiveFailures)
                 .putString(KEY_LAST_ERROR, value.lastError)
                 .putLong(KEY_UPDATED_AT, value.updatedAtEpochMs)
+                .putLong(KEY_TARGET_AT, value.targetAtEpochMs ?: NO_TIME)
+                .putLong(KEY_ACTION_SENT_AT, value.actionSentAtEpochMs ?: NO_TIME)
+                .putBoolean(KEY_HARVEST_OBSERVED, value.harvestObserved)
                 .commit(),
         ) { "Unable to persist automation runtime checkpoint" }
     }
 
     private companion object {
         const val PREFERENCES = "automation_runtime_state"
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
         const val NO_TIME = -1L
         const val KEY_SCHEMA_VERSION = "schema_version"
         const val KEY_TASK_ID = "task_id"
@@ -336,6 +410,9 @@ class RuntimeStateStore(context: Context) {
         const val KEY_CONSECUTIVE_FAILURES = "consecutive_failures"
         const val KEY_LAST_ERROR = "last_error"
         const val KEY_UPDATED_AT = "updated_at"
+        const val KEY_TARGET_AT = "target_at"
+        const val KEY_ACTION_SENT_AT = "action_sent_at"
+        const val KEY_HARVEST_OBSERVED = "harvest_observed"
     }
 }
 

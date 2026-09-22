@@ -57,6 +57,7 @@ import com.lispace.wzryncauto.ocr.FarmlandState
 import com.lispace.wzryncauto.ocr.OcrSampleStore
 import com.lispace.wzryncauto.schedule.FarmSchedule
 import com.lispace.wzryncauto.schedule.FarmScheduleCalculator
+import com.lispace.wzryncauto.schedule.FarmWateringPolicy
 import com.lispace.wzryncauto.schedule.FarmStateStore
 import com.lispace.wzryncauto.schedule.WakeReason
 import com.lispace.wzryncauto.schedule.AutomationAlarmScheduler
@@ -565,16 +566,13 @@ class OverlayService : Service() {
                 refreshUi()
             }
             RuntimePhase.RUNNING -> {
-                checkpoint.taskId?.let {
-                    runtimeStateStore.markFailure(
-                        it,
-                        "上次执行在进程退出前未完成，已禁止自动重复点击",
-                        recoverable = true,
+                checkpoint.taskId?.let { taskId ->
+                    scheduleFailureRetry(
+                        taskId = taskId,
+                        failedRound = checkpoint.completedRounds + 1,
+                        failureReason = "上次执行中断，保留已发动作并恢复观察",
                     )
                 }
-                isRunning = false
-                currentOperation = "上次执行中断，需要重新确认"
-                updateBubbleColor(COLOR_ERROR)
             }
             RuntimePhase.PAUSED -> {
                 if (keepScreenAwake) acquireScreenWakeLock()
@@ -890,9 +888,25 @@ class OverlayService : Service() {
         currentOperation = "执行第 $round 轮"
         appendLog("第 $round 轮开始")
         val roundStartedAt = LocalDateTime.now()
+        val previousFarm = farmStateStore.load()
+        val plannedTarget = checkpoint.targetAtEpochMs?.let {
+            LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(it), ZoneId.systemDefault())
+        }
+        val cooldownTarget = if (checkpoint.wakeReason == WakeReason.MATURITY.name) null else
+            previousFarm?.lastAttemptAt?.plusSeconds(previousFarm.cycleMinutes * 60L / 30L)
+        val notBefore = listOfNotNull(plannedTarget, cooldownTarget).maxOrNull()
+        val recoveryAt = if (checkpoint.hasAlreadySentOneClick(round)) {
+            LocalDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(
+                    checkpoint.actionSentAtEpochMs ?: checkpoint.updatedAtEpochMs,
+                ),
+                ZoneId.systemDefault(),
+            )
+        } else null
         if (!keepScreenAwake) acquireScreenWakeLock()
 
         var primaryFailure: Throwable? = null
+        var computedPlan: NextRunPlan? = null
         val result = try {
             ensureDeviceReadyForAutomation()
             prepareRunBrightness()
@@ -907,12 +921,34 @@ class OverlayService : Service() {
                 control = control,
                 onState = ::onAutomationState,
                 onLog = ::appendLog,
+                notBefore = notBefore,
+                resumeAfterActionAt = recoveryAt,
                 oneClickGuard = PersistentOneClickActionGuard(
                     runtimeStateStore,
                     taskId,
                     round,
                 ),
-            ).run()
+            ).run().also { action ->
+                val preparationSeconds = if (action.recoveredAction) {
+                    120L
+                } else {
+                    Duration.between(roundStartedAt, action.readyAt).seconds.coerceAtLeast(1)
+                }
+                val wakeLeadSeconds = preparationSeconds + SCHEDULE_SAFETY_MARGIN_SECONDS
+                appendLog(
+                    if (action.recoveredAction) "恢复观察不参与启动耗时测量，使用默认准备提前量"
+                    else "启动到按钮就绪：${preparationSeconds}秒（不含等点）；提前准备余量15秒",
+                )
+                val actionCheckpoint = runtimeStateStore.load()
+                computedPlan = buildNextRunPlan(
+                    action.farmlandState, action, wakeLeadSeconds,
+                    resetBatch = actionCheckpoint.pendingAction in setOf(
+                        com.lispace.wzryncauto.schedule.PendingFarmAction.MATURITY_HARVEST_SENT,
+                        com.lispace.wzryncauto.schedule.PendingFarmAction.MATURITY_HARVEST_CONFIRMED,
+                    ),
+                    harvestObserved = actionCheckpoint.harvestObserved,
+                )
+            }
         } catch (error: Throwable) {
             primaryFailure = error
             throw error
@@ -926,26 +962,14 @@ class OverlayService : Service() {
             }
         }
 
-        appendLog("本轮类型：${if (result.harvested) "收获" else "浇水"}")
+        appendLog("本轮类型：${if (result.harvested) "收获并检查种植" else "务农后检查作物"}")
         if (result.harvested) result.harvestInfo?.let(::recordHarvest)
-        val secondsToOneClick = Duration.between(
-            roundStartedAt,
-            result.firstWaterAt,
-        ).seconds.coerceAtLeast(1)
-        val wakeLeadSeconds =
-            (secondsToOneClick + SCHEDULE_SAFETY_MARGIN_SECONDS).coerceAtLeast(0)
-        appendLog(
-            "启动到一键务农：${secondsToOneClick}秒；" +
-                "排程安全余量：${SCHEDULE_SAFETY_MARGIN_SECONDS}秒",
-        )
-
-        val nextPlan = buildNextRunPlan(result.farmlandState, result, wakeLeadSeconds)
+        val nextPlan = computedPlan
         completedRounds = round
-        runtimeStateStore.markRoundCompleted(taskId, completedRounds)
         refreshUi()
 
         if (nextPlan == null || (!isInfinite && completedRounds >= loopCount)) {
-            runtimeStateStore.markCompleted(taskId)
+            runtimeStateStore.markCompleted(taskId, completedRound = completedRounds)
             alarmScheduler.cancel()
             val reason = when {
                 nextPlan == null && result.farmlandState is FarmlandState.Empty ->
@@ -967,21 +991,20 @@ class OverlayService : Service() {
             triggerAtEpochMs = triggerEpoch,
             wakeReason = nextPlan.reason.name,
             nowEpochMs = nowEpoch,
+            targetAtEpochMs = nextPlan.targetAt.atZone(ZoneId.systemDefault())
+                .toInstant().toEpochMilli(),
+            completedRound = completedRounds,
         )
-        val alarm = alarmScheduler.schedule(waiting)
-        appendLog(
-            if (alarm.exact) {
-                "已登记系统精确定时唤醒"
-            } else {
-                "精确闹钟未授权，已登记低精度系统唤醒"
-            },
-        )
+        val alarm = runCatching { alarmScheduler.schedule(waiting) }
+            .onSuccess { appendLog("已登记系统精确定时唤醒") }
+            .onFailure { appendLog("系统闹钟登记失败：${it.message}；使用应用内计时") }
+            .getOrNull()
         return RoundOutcome.Waiting(
             wakeAt = LocalDateTime.ofInstant(
                 java.time.Instant.ofEpochMilli(triggerEpoch),
                 ZoneId.systemDefault(),
             ),
-            exact = alarm.exact,
+            exact = alarm?.exact == true,
             generation = waiting.generation,
             triggerAtEpochMs = triggerEpoch,
         )
@@ -1020,13 +1043,39 @@ class OverlayService : Service() {
         farmland: FarmlandState,
         result: com.lispace.wzryncauto.automation.FarmActionResult,
         wakeLeadSeconds: Long,
+        resetBatch: Boolean = false,
+        harvestObserved: Boolean = false,
     ): NextRunPlan? = when (farmland) {
         is FarmlandState.Planted -> {
             val observedMaturity = FarmScheduleCalculator.resolveObservedMaturity(
                 farmland.maturity,
                 result.firstWaterAt,
             )
-            val stored = if (result.harvested) null else compatibleStoredFarmState(observedMaturity)
+            val observedAt = farmland.maturity.observedAt ?: LocalDateTime.now()
+            val freshBatch = result.harvested || harvestObserved
+            val prior = if (freshBatch || resetBatch) null else farmStateStore.load()
+            val evidence = prior?.let {
+                FarmWateringPolicy.evaluate(
+                    cycleMinutes = it.cycleMinutes,
+                    batchStartedAt = it.batchStartedAt,
+                    previousMaturityAt = it.observedMaturityAt,
+                    previousObservedAt = it.updatedAt,
+                    observedMaturityAt = observedMaturity,
+                    observedAt = observedAt,
+                    lastConfirmedWateringAt = it.lastConfirmedWateringAt,
+                    lastAttemptAt = result.firstWaterAt,
+                )
+            }
+            evidence?.let { appendLog(it.reason) }
+            val stored = prior?.takeIf { evidence?.batchCompatible == true }
+            // A repeated observation of the same sent action cannot count twice.
+            val newlyConfirmed = evidence?.wateringConfirmed == true && stored != null &&
+                (stored.lastAttemptAt == null || result.firstWaterAt.isAfter(stored.lastAttemptAt))
+            val confirmedAt = if (newlyConfirmed) result.firstWaterAt
+                else stored?.lastConfirmedWateringAt
+            // Until a decrease is measurable, this is explicitly a provisional
+            // reference. Do not advertise a successful watering or a new batch.
+            val referenceAt = confirmedAt ?: result.firstWaterAt
             val schedule = FarmScheduleCalculator.calculate(
                 firstWaterAt = result.firstWaterAt,
                 observedMaturityAt = observedMaturity,
@@ -1034,19 +1083,33 @@ class OverlayService : Service() {
                 storedCycleMinutes = stored?.cycleMinutes,
                 batchStartedAt = stored?.batchStartedAt,
                 wakeLeadSeconds = wakeLeadSeconds,
+                lastConfirmedWateringAt = referenceAt,
+                lastAttemptAt = result.firstWaterAt,
+                freshBatch = freshBatch,
+                storedCycleEstimated = stored?.cycleEstimated ?: true,
+                maturityPrecisionSeconds = if (farmland.maturity.relativeMinutes == null) 59 else 0,
             )
             farmStateStore.save(
                 cycleMinutes = schedule.cycleMinutes,
                 batchStartedAt = schedule.batchStartedAt,
                 observedMaturityAt = schedule.observedMaturityAt,
+                updatedAt = observedAt,
+                lastConfirmedWateringAt = confirmedAt,
+                lastAttemptAt = result.firstWaterAt,
+                cycleEstimated = schedule.cycleEstimated,
+                confirmedWateringCount = (stored?.confirmedWateringCount ?: 0) +
+                    if (newlyConfirmed) 1 else 0,
             )
-            logSchedule(schedule, result.harvested)
+            logSchedule(schedule, freshBatch)
             appendLog(
-                "预计一键务农：" +
-                    schedule.wakeAt.plusSeconds(wakeLeadSeconds)
+                "到点点击：" +
+                    schedule.targetAt
                         .format(DATE_TIME_FORMAT),
             )
-            NextRunPlan(schedule.wakeAt, schedule.reason)
+            if (!newlyConfirmed && !freshBatch) {
+                appendLog("本次未取得足够的减时证据，不计为已确认有效浇水")
+            }
+            NextRunPlan(schedule.wakeAt, schedule.reason, schedule.targetAt)
         }
         is FarmlandState.Empty -> {
             appendLog("已确认到达土地，但当前土地为空，不创建错误排程")
@@ -1060,21 +1123,6 @@ class OverlayService : Service() {
             "土地状态无法确认：${farmland.reason}",
         )
     }
-
-    private suspend fun compatibleStoredFarmState(observedMaturity: LocalDateTime) =
-        farmStateStore.load()?.takeIf { stored ->
-            val storedMaturity = stored.observedMaturityAt ?: return@takeIf false
-            val ageHours = kotlin.math.abs(
-                Duration.between(stored.updatedAt, LocalDateTime.now()).toHours(),
-            )
-            val maturityDifferenceMinutes = kotlin.math.abs(
-                Duration.between(storedMaturity, observedMaturity).toMinutes(),
-            )
-            (ageHours <= FARM_STATE_MAX_AGE_HOURS &&
-                maturityDifferenceMinutes <= FARM_STATE_MATURITY_TOLERANCE_MINUTES).also {
-                if (!it) appendLog("旧作物批次与本轮成熟时间不一致，已忽略旧周期")
-            }
-        }
 
     private suspend fun cleanupAfterRound(): List<String> = withContext(NonCancellable) {
         val errors = mutableListOf<String>()
@@ -1101,6 +1149,9 @@ class OverlayService : Service() {
             },
         )
         appendLog("成熟时间：${schedule.observedMaturityAt.format(DATE_TIME_FORMAT)}")
+        if (schedule.cycleEstimated) {
+            appendLog("周期为估算值：尚无可靠的新播种记录，无法仅凭剩余时间确定原始周期")
+        }
         appendLog("下个目标：${schedule.targetAt.format(DATE_TIME_FORMAT)}（$reason）")
         appendLog("下次操作时间：${schedule.wakeAt.format(DATE_TIME_FORMAT)}")
     }
@@ -1136,6 +1187,7 @@ class OverlayService : Service() {
                     triggerAtEpochMs = originalEpoch.coerceAtLeast(nowEpoch),
                     wakeReason = paused.wakeReason ?: WakeReason.MATURITY.name,
                     nowEpochMs = nowEpoch,
+                    targetAtEpochMs = paused.targetAtEpochMs,
                 )
                 val registration = alarmScheduler.schedule(waiting)
                 armInProcessWake(waiting)
@@ -1865,11 +1917,9 @@ class OverlayService : Service() {
         private const val RUNTIME_LOG_FILE = "runtime.log"
         private const val MAX_RUNTIME_LOG_BYTES = 1_000_000L
         private const val PERSISTED_LOG_LINES = 100
-        private const val SCHEDULE_SAFETY_MARGIN_SECONDS = -5L
+        private const val SCHEDULE_SAFETY_MARGIN_SECONDS = 15L
         private const val ALARM_EARLY_TOLERANCE_MS = 30_000L
         private const val IN_PROCESS_WAKE_RECHECK_MS = 60_000L
-        private const val FARM_STATE_MAX_AGE_HOURS = 72L
-        private const val FARM_STATE_MATURITY_TOLERANCE_MINUTES = 10L
         private const val MAX_DIAGNOSTIC_DIRECTORIES = 20
         private const val FAILURE_RETRY_DELAY_MS = 60_000L
         private const val DIAGNOSTIC_RECENT_LOG_LINES = 30
@@ -1893,6 +1943,7 @@ class OverlayService : Service() {
     private data class NextRunPlan(
         val wakeAt: LocalDateTime,
         val reason: WakeReason,
+        val targetAt: LocalDateTime,
     )
 
     private sealed interface RoundOutcome {

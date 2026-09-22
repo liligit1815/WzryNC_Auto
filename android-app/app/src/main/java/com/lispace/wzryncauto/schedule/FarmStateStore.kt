@@ -2,6 +2,7 @@ package com.lispace.wzryncauto.schedule
 
 import android.content.Context
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -18,6 +19,10 @@ data class StoredFarmState(
     val batchStartedAt: LocalDateTime,
     val observedMaturityAt: LocalDateTime?,
     val updatedAt: LocalDateTime,
+    val lastConfirmedWateringAt: LocalDateTime? = null,
+    val lastAttemptAt: LocalDateTime? = null,
+    val cycleEstimated: Boolean = true,
+    val confirmedWateringCount: Int = 0,
 )
 
 class FarmStateStore(private val context: Context) {
@@ -45,6 +50,12 @@ class FarmStateStore(private val context: Context) {
                     epochMillis = values[UPDATED_AT_EPOCH],
                     legacy = values[UPDATED_AT],
                 ),
+                lastConfirmedWateringAt = values[LAST_CONFIRMED_WATERING_AT]?.let {
+                    readTime(it, null)
+                },
+                lastAttemptAt = values[LAST_ATTEMPT_AT]?.let { readTime(it, null) },
+                cycleEstimated = values[CYCLE_ESTIMATED] ?: true,
+                confirmedWateringCount = values[CONFIRMED_WATERING_COUNT] ?: 0,
             )
         }.getOrNull()
     }
@@ -54,6 +65,10 @@ class FarmStateStore(private val context: Context) {
         batchStartedAt: LocalDateTime,
         observedMaturityAt: LocalDateTime?,
         updatedAt: LocalDateTime = LocalDateTime.now(),
+        lastConfirmedWateringAt: LocalDateTime? = null,
+        lastAttemptAt: LocalDateTime? = null,
+        cycleEstimated: Boolean = true,
+        confirmedWateringCount: Int = 0,
     ) {
         require(cycleMinutes in setOf(5, 60, 480, 960, 1920))
         context.farmStateDataStore.edit { values ->
@@ -69,6 +84,18 @@ class FarmStateStore(private val context: Context) {
             }
             values[UPDATED_AT_EPOCH] = updatedAt.toEpochMillis()
             values.remove(UPDATED_AT)
+            if (lastConfirmedWateringAt != null) {
+                values[LAST_CONFIRMED_WATERING_AT] = lastConfirmedWateringAt.toEpochMillis()
+            } else {
+                values.remove(LAST_CONFIRMED_WATERING_AT)
+            }
+            if (lastAttemptAt != null) {
+                values[LAST_ATTEMPT_AT] = lastAttemptAt.toEpochMillis()
+            } else {
+                values.remove(LAST_ATTEMPT_AT)
+            }
+            values[CYCLE_ESTIMATED] = cycleEstimated
+            values[CONFIRMED_WATERING_COUNT] = confirmedWateringCount
         }
     }
 
@@ -92,5 +119,9 @@ class FarmStateStore(private val context: Context) {
         val BATCH_STARTED_AT_EPOCH = longPreferencesKey("batch_started_at_epoch_ms")
         val OBSERVED_MATURITY_AT_EPOCH = longPreferencesKey("observed_maturity_at_epoch_ms")
         val UPDATED_AT_EPOCH = longPreferencesKey("updated_at_epoch_ms")
+        val LAST_CONFIRMED_WATERING_AT = longPreferencesKey("last_confirmed_watering_at")
+        val LAST_ATTEMPT_AT = longPreferencesKey("last_attempt_at")
+        val CYCLE_ESTIMATED = booleanPreferencesKey("cycle_estimated")
+        val CONFIRMED_WATERING_COUNT = intPreferencesKey("confirmed_watering_count")
     }
 }

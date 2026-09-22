@@ -6,6 +6,7 @@ import com.lispace.wzryncauto.ocr.HarvestOcrObservation
 import com.lispace.wzryncauto.ocr.HarvestScreenTextBox
 import com.lispace.wzryncauto.ocr.HarvestUiObservation
 import com.lispace.wzryncauto.ocr.MaturityReading
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -44,6 +45,7 @@ class FarmActionAutomationTest {
         assertEquals(listOf(1520 to 617), runtime.taps)
         assertEquals(listOf(1520 to 617), guard.beforeTargets)
         assertEquals(listOf(clickedAt), guard.acceptedAt)
+        assertEquals(0, guard.harvestObservedCount)
         assertEquals(
             listOf(
                 SwipeGesture(430, 755, 305, 538, 1500),
@@ -394,6 +396,7 @@ class FarmActionAutomationTest {
 
     @Test
     fun `closes complete harvest popup using refreshed OCR coordinate`() = runBlocking {
+        val guard = RecordingGuard()
         val runtime = FakeRuntime(
             uiReadings = ArrayDeque(
                 listOf(
@@ -409,11 +412,15 @@ class FarmActionAutomationTest {
                     farmUi(),
                 ),
             ),
+            onTap = { x, _ ->
+                if (x == 1204) assertEquals(1, guard.harvestObservedCount)
+            },
         )
 
-        val result = FarmActionAutomation(runtime).run()
+        val result = FarmActionAutomation(runtime, oneClickGuard = guard).run()
 
         assertTrue(result.harvested)
+        assertEquals(1, guard.harvestObservedCount)
         assertEquals(listOf(1520 to 617, 1204 to 904), runtime.taps)
         assertEquals(2, runtime.swipes.size)
     }
@@ -679,12 +686,232 @@ class FarmActionAutomationTest {
         assertEquals(2, runtime.swipes.size)
     }
 
+    @Test
+    fun `early arrival waits then reads a fresh button without inflating readiness time`() = runBlocking {
+        val start = LocalDateTime.of(2026, 9, 22, 10, 0)
+        val target = start.plusSeconds(8)
+        var clock = start
+        val tapTimes = mutableListOf<LocalDateTime>()
+        val waits = mutableListOf<Long>()
+        val runtime = FakeRuntime(
+            uiReadings = ArrayDeque(listOf(
+                farmUi(), farmUi(), oneClickUi(1520, 617), oneClickUi(1530, 625),
+            )),
+            onDelay = { milliseconds ->
+                waits += milliseconds
+                clock = clock.plusNanos(milliseconds * 1_000_000)
+            },
+            onTap = { _, _ -> tapTimes += clock },
+        )
+
+        val result = FarmActionAutomation(runtime, now = { clock }, notBefore = target).run()
+
+        assertEquals(listOf(1530 to 625), runtime.taps)
+        assertTrue(tapTimes.single() >= target)
+        assertTrue(result.readyAt < target)
+        assertEquals(tapTimes.single(), result.firstWaterAt)
+        assertTrue(waits.all { it in 1L..250L })
+    }
+
+    @Test
+    fun `cancelling while awaiting target does not send a watering action`() = runBlocking {
+        val start = LocalDateTime.of(2026, 9, 22, 10, 0)
+        var waiting = false
+        val runtime = FakeRuntime(
+            uiReadings = ArrayDeque(listOf(farmUi(), farmUi(), oneClickUi(1520, 617))),
+            onDelay = { if (waiting) throw CancellationException("用户停止") },
+        )
+        val guard = RecordingGuard()
+
+        val failure = runCatching {
+            FarmActionAutomation(
+                runtime,
+                now = { start },
+                notBefore = start.plusMinutes(1),
+                oneClickGuard = guard,
+                onLog = { if ("等待计划浇水" in it) waiting = true },
+            ).run()
+        }.exceptionOrNull()
+
+        assertTrue(failure is CancellationException)
+        assertTrue(runtime.taps.isEmpty())
+        assertTrue(guard.beforeTargets.isEmpty())
+    }
+
+    @Test
+    fun `recovery reads farmland without repeating an already sent action`() = runBlocking {
+        val sentAt = LocalDateTime.of(2026, 9, 22, 10, 0)
+        val runtime = FakeRuntime()
+        val guard = RecordingGuard(allow = false)
+
+        val result = FarmActionAutomation(
+            runtime,
+            now = { sentAt.plusMinutes(1) },
+            resumeAfterActionAt = sentAt,
+            oneClickGuard = guard,
+        ).run()
+
+        assertTrue(result.recoveredAction)
+        assertEquals(sentAt, result.firstWaterAt)
+        assertTrue(runtime.taps.isEmpty())
+        assertTrue(guard.beforeTargets.isEmpty())
+        assertEquals(2, runtime.swipes.size)
+        assertEquals(3, runtime.farmlandReadCount)
+    }
+
+    @Test
+    fun `watering that matures the crop performs one separately guarded harvest`() = runBlocking {
+        var clock = LocalDateTime.of(2026, 9, 22, 10, 0)
+        lateinit var runtime: FakeRuntime
+        runtime = FakeRuntime(
+            farmlandReadings = ArrayDeque(List(3) { mature() } + List(3) { planted(11, 0) }),
+            uiProvider = {
+                when {
+                    runtime.taps.count { it.first == 1520 } == 2 &&
+                        runtime.taps.none { it.first == 1200 } -> completeHarvestUi(1200, 900)
+                    runtime.swipes.size in setOf(1, 3) -> oneClickUi(1520, 617)
+                    else -> farmUi()
+                }
+            },
+            onTap = { _, _ -> clock = clock.plusSeconds(10) },
+        )
+        val guard = RecordingGuard()
+
+        val result = FarmActionAutomation(runtime, now = { clock }, oneClickGuard = guard).run()
+
+        assertTrue(result.harvested)
+        assertTrue(result.farmlandState is FarmlandState.Planted)
+        assertEquals(listOf(1520 to 617), guard.beforeTargets)
+        assertEquals(listOf(1520 to 617), guard.beforeMaturityTargets)
+        assertEquals(guard.maturityAcceptedAt.single(), result.firstWaterAt)
+        assertTrue(result.readyAt < result.firstWaterAt)
+        assertEquals(4, runtime.swipes.size)
+        assertEquals(SwipeGesture(430, 755, 430, 955, 1200), runtime.swipes[2])
+        assertEquals(6, runtime.farmlandReadCount)
+    }
+
+    @Test
+    fun `crop maturing between OCR frames is harvested in the current visit`() = runBlocking {
+        lateinit var runtime: FakeRuntime
+        runtime = FakeRuntime(
+            farmlandReadings = ArrayDeque(
+                listOf(planted(10, 1), planted(10, 1), mature(), mature()) +
+                    List(3) { planted(11, 0) },
+            ),
+            uiProvider = {
+                if (runtime.swipes.size in setOf(1, 3)) oneClickUi(1520, 617) else farmUi()
+            },
+        )
+        val guard = RecordingGuard()
+
+        val result = FarmActionAutomation(runtime, oneClickGuard = guard).run()
+
+        assertTrue(result.farmlandState is FarmlandState.Planted)
+        assertEquals(1, guard.beforeMaturityTargets.size)
+        assertEquals(7, runtime.farmlandReadCount)
+        assertEquals(2, runtime.taps.size)
+        // A successful input command without a visible harvest modal must
+        // not be reported as a visually confirmed harvest.
+        assertFalse(result.harvested)
+    }
+
+    @Test
+    fun `recovery preserves a pending reward popup without sending another farm action`() = runBlocking {
+        lateinit var runtime: FakeRuntime
+        runtime = FakeRuntime(
+            uiProvider = {
+                if (runtime.taps.isEmpty()) completeHarvestUi(1200, 900) else farmUi()
+            },
+        )
+        val sentAt = LocalDateTime.of(2026, 9, 22, 10, 0)
+        val guard = RecordingGuard(allow = false)
+
+        val result = FarmActionAutomation(
+            runtime,
+            resumeAfterActionAt = sentAt,
+            oneClickGuard = guard,
+        ).run()
+
+        assertTrue(result.harvested)
+        assertTrue(result.recoveredAction)
+        assertEquals(sentAt, result.firstWaterAt)
+        assertEquals(listOf(1200 to 900), runtime.taps)
+        assertTrue(guard.beforeTargets.isEmpty())
+        assertTrue(guard.beforeMaturityTargets.isEmpty())
+    }
+
+    @Test
+    fun `a second mature result stops without an unbounded click loop`() = runBlocking {
+        lateinit var runtime: FakeRuntime
+        runtime = FakeRuntime(
+            farmlandReadings = ArrayDeque(List(6) { mature() }),
+            uiProvider = {
+                if (runtime.swipes.size in setOf(1, 3)) oneClickUi(1520, 617) else farmUi()
+            },
+        )
+        val guard = RecordingGuard()
+
+        val failure = runCatching {
+            FarmActionAutomation(runtime, oneClickGuard = guard).run()
+        }.exceptionOrNull()
+
+        assertTrue(failure is AutomationFailure)
+        assertTrue(failure?.message.orEmpty().contains("同场收获后仍显示已成熟"))
+        assertEquals(2, runtime.taps.size)
+        assertEquals(1, guard.beforeMaturityTargets.size)
+        assertEquals(4, runtime.swipes.size)
+    }
+
+    @Test
+    fun `an already sent maturity harvest is never repeated on recovery`() = runBlocking {
+        lateinit var runtime: FakeRuntime
+        runtime = FakeRuntime(
+            farmlandReadings = ArrayDeque(List(3) { mature() }),
+            uiProvider = {
+                if (runtime.swipes.size == 3) oneClickUi(1520, 617) else farmUi()
+            },
+        )
+        val guard = RecordingGuard(allowMaturityHarvest = false)
+
+        val failure = runCatching {
+            FarmActionAutomation(
+                runtime,
+                resumeAfterActionAt = LocalDateTime.of(2026, 9, 22, 10, 0),
+                oneClickGuard = guard,
+            ).run()
+        }.exceptionOrNull()
+
+        assertTrue(failure?.message.orEmpty().contains("同场收获已越过发送边界"))
+        assertTrue(runtime.taps.isEmpty())
+        assertTrue(guard.beforeTargets.isEmpty())
+        assertEquals(1, guard.beforeMaturityTargets.size)
+    }
+
+    @Test
+    fun `old mature frames do not authorize a harvest when the latest frame is unknown`() = runBlocking {
+        val runtime = standardRuntime(
+            farmlandReadings = ArrayDeque(
+                listOf(mature(), mature()) + List(3) { FarmlandState.Unknown("", "未识别") },
+            ),
+        )
+        val guard = RecordingGuard()
+
+        val result = FarmActionAutomation(runtime, oneClickGuard = guard).run()
+
+        assertTrue(result.farmlandState is FarmlandState.Unknown)
+        assertEquals(1, runtime.taps.size)
+        assertTrue(guard.beforeMaturityTargets.isEmpty())
+    }
+
     private class FakeRuntime(
         private val uiReadings: ArrayDeque<HarvestOcrObservation> = ArrayDeque(),
         private val rootUiReadings: ArrayDeque<HarvestOcrObservation> = ArrayDeque(),
         private val farmlandReadings: ArrayDeque<FarmlandState> = ArrayDeque(),
         private val defaultUi: HarvestOcrObservation = farmUi(),
         private val onHarvestUiRead: () -> Unit = {},
+        private val uiProvider: (() -> HarvestOcrObservation)? = null,
+        private val onDelay: (Long) -> Unit = {},
+        private val onTap: (Int, Int) -> Unit = { _, _ -> },
     ) : AutomationRuntime {
         val taps = mutableListOf<Pair<Int, Int>>()
         val swipes = mutableListOf<SwipeGesture>()
@@ -700,6 +927,7 @@ class FarmActionAutomationTest {
         override suspend fun stopGame() = Unit
         override suspend fun tap(x: Int, y: Int) {
             taps += x to y
+            onTap(x, y)
         }
         override suspend fun swipe(gesture: SwipeGesture) {
             swipes += gesture
@@ -711,20 +939,25 @@ class FarmActionAutomationTest {
         }
         override suspend fun readHarvestUi(): HarvestOcrObservation {
             onHarvestUiRead()
-            return if (uiReadings.isEmpty()) defaultUi else uiReadings.removeFirst()
+            return if (uiReadings.isEmpty()) uiProvider?.invoke() ?: defaultUi else uiReadings.removeFirst()
         }
         override suspend fun readHarvestUiFromRoot(): HarvestOcrObservation? {
             rootUiReadCount += 1
             return if (rootUiReadings.isEmpty()) null else rootUiReadings.removeFirst()
         }
-        override suspend fun delayMs(milliseconds: Long) = Unit
+        override suspend fun delayMs(milliseconds: Long) = onDelay(milliseconds)
     }
 
     private class RecordingGuard(
         private val allow: Boolean = true,
+        private val allowMaturityHarvest: Boolean = true,
     ) : OneClickActionGuard {
         val beforeTargets = mutableListOf<Pair<Int, Int>>()
         val acceptedAt = mutableListOf<LocalDateTime>()
+        val beforeMaturityTargets = mutableListOf<Pair<Int, Int>>()
+        val maturityAcceptedAt = mutableListOf<LocalDateTime>()
+        var harvestObservedCount = 0
+            private set
 
         override suspend fun beforeTap(target: VerifiedActionTarget): Boolean {
             beforeTargets += target.centerX to target.centerY
@@ -734,9 +967,24 @@ class FarmActionAutomationTest {
         override suspend fun afterTapAccepted(acceptedAt: LocalDateTime) {
             this.acceptedAt += acceptedAt
         }
+
+        override suspend fun onHarvestObserved() {
+            harvestObservedCount += 1
+        }
+
+        override suspend fun beforeMaturityHarvest(target: VerifiedActionTarget): Boolean {
+            beforeMaturityTargets += target.centerX to target.centerY
+            return allowMaturityHarvest
+        }
+
+        override suspend fun afterMaturityHarvestAccepted(acceptedAt: LocalDateTime) {
+            maturityAcceptedAt += acceptedAt
+        }
     }
 
     companion object {
+        private fun mature() = FarmlandState.Mature(MaturityReading.Mature("已成熟"))
+
         private val baseFarmBoxes = listOf(
             box("仓库", 2200, 220),
             box("社交", 2200, 350),

@@ -8,6 +8,7 @@ import com.lispace.wzryncauto.ocr.HarvestUiObservation
 import com.lispace.wzryncauto.ocr.MaturityReading
 import com.lispace.wzryncauto.ocr.findTextBox
 import kotlinx.coroutines.CancellationException
+import java.time.Duration
 import java.time.LocalDateTime
 import kotlin.math.abs
 import kotlin.math.max
@@ -17,6 +18,8 @@ data class FarmActionResult(
     val harvestInfo: HarvestInfo?,
     val farmlandState: FarmlandState,
     val firstWaterAt: LocalDateTime,
+    val readyAt: LocalDateTime = firstWaterAt,
+    val recoveredAction: Boolean = false,
 ) {
     val maturity: MaturityReading?
         get() = when (farmlandState) {
@@ -43,11 +46,21 @@ class FarmActionAutomation(
     private val now: () -> LocalDateTime = LocalDateTime::now,
     private val oneClickGuard: OneClickActionGuard = AllowOneClickActionGuard,
     private val monotonicNanos: () -> Long = System::nanoTime,
+    private val notBefore: LocalDateTime? = null,
+    private val resumeAfterActionAt: LocalDateTime? = null,
 ) {
     private var state = AutomationState.RESETTING_POSITION
 
     suspend fun run(): FarmActionResult {
         operation("确认农场页面")
+        val recoveredHarvest = if (resumeAfterActionAt != null) {
+            // A previously sent action may have succeeded just before the
+            // process stopped. Observe/close its reward modal without sending
+            // the farm action again, and retain any direct harvest evidence.
+            handleHarvestPopup()
+        } else {
+            HarvestOutcome(detected = false, info = null)
+        }
         val spawn = requireFarmReady()
         val profile = MovementProfiles.requireFor(spawn.sourceWidth, spawn.sourceHeight)
 
@@ -56,8 +69,89 @@ class FarmActionAutomation(
         runtime.swipe(profile.spawnToStatue)
         awaitActionStability("移动到雕像后")
 
-        transition(AutomationState.VERIFYING_ONE_CLICK_FARM, "确认一键务农按钮")
-        val freshButton = requireOneClickFarmTarget(timeoutMs = ONE_CLICK_TIMEOUT_MS)
+        var readyAt = now()
+        val firstAction = if (resumeAfterActionAt != null) {
+            transition(AutomationState.RECOVERING_FARM_ACTION, "复查上次已发送的务农结果")
+            onLog("本轮务农指令已经发送，恢复时只复查土地，不重复浇水")
+            resumeAfterActionAt to recoveredHarvest
+        } else {
+            transition(AutomationState.VERIFYING_ONE_CLICK_FARM, "确认一键务农按钮")
+            var freshButton = requireOneClickFarmTarget(timeoutMs = ONE_CLICK_TIMEOUT_MS)
+            readyAt = now()
+            // The screen may change while waiting at the statue. Never carry
+            // a pre-wait coordinate across the actual action boundary.
+            while (awaitActionTime()) {
+                freshButton = requireOneClickFarmTarget(timeoutMs = ONE_CLICK_TIMEOUT_MS)
+            }
+            performOneClick(freshButton, maturityHarvest = false)
+        }
+        var actionAt = firstAction.first
+        var harvestInfo = firstAction.second
+        var farmlandState = moveToFarmlandAndRead(profile)
+
+        if (farmlandState is FarmlandState.Mature) {
+            // A watering reduction can make a crop mature immediately. The
+            // mature consensus requires the latest two readings to agree;
+            // this is a distinct harvest action, never a retry of watering.
+            onLog("浇水后连续两帧确认已成熟，同场执行一次收获")
+            transition(AutomationState.MOVING_TO_STATUE, "作物已成熟，返回雕像收获")
+            val returnGesture = profile.statueToFarmland.let { outbound ->
+                outbound.copy(
+                    endX = outbound.startX * 2 - outbound.endX,
+                    endY = outbound.startY * 2 - outbound.endY,
+                )
+            }
+            check(returnGesture.endX in 0 until profile.screenWidth &&
+                returnGesture.endY in 0 until profile.screenHeight) {
+                "返回雕像的摇杆坐标超出屏幕，禁止移动"
+            }
+            operation(describe(returnGesture))
+            runtime.swipe(returnGesture)
+            awaitActionStability("返回雕像后")
+            transition(AutomationState.VERIFYING_ONE_CLICK_FARM, "重新确认收获按钮")
+            val harvestButton = requireOneClickFarmTarget(timeoutMs = ONE_CLICK_TIMEOUT_MS)
+            val harvestAction = performOneClick(harvestButton, maturityHarvest = true)
+            actionAt = harvestAction.first
+            harvestInfo = HarvestOutcome(
+                detected = harvestInfo.detected || harvestAction.second.detected,
+                info = harvestAction.second.info ?: harvestInfo.info,
+            )
+            farmlandState = moveToFarmlandAndRead(profile)
+            if (farmlandState is FarmlandState.Mature) {
+                throw AutomationFailure("同场收获后仍显示已成熟，禁止继续重复点击")
+            }
+        }
+
+        if (farmlandState is FarmlandState.Planted) {
+            transition(AutomationState.READING_MATURITY, "已到达土地，成熟信息已确认")
+        }
+        return FarmActionResult(
+            harvested = harvestInfo.detected,
+            harvestInfo = harvestInfo.info,
+            farmlandState = farmlandState,
+            firstWaterAt = actionAt,
+            readyAt = readyAt,
+            recoveredAction = resumeAfterActionAt != null,
+        )
+    }
+
+    private suspend fun awaitActionTime(): Boolean {
+        val target = notBefore ?: return false
+        var waited = false
+        while (true) {
+            control.awaitRunnable()
+            val remaining = Duration.between(now(), target)
+            if (remaining.isNegative || remaining.isZero) return waited
+            if (!waited) operation("已到达雕像，等待计划浇水时刻 $target")
+            waited = true
+            wait(remaining.toMillis().coerceIn(1L, 1_000L))
+        }
+    }
+
+    private suspend fun performOneClick(
+        freshButton: OcrTarget,
+        maturityHarvest: Boolean,
+    ): Pair<LocalDateTime, HarvestOutcome> {
 
         transition(AutomationState.ONE_CLICK_FARMING, "准备执行一键务农")
         operation("点击一键务农（${freshButton.centerX}, ${freshButton.centerY}）")
@@ -66,8 +160,14 @@ class FarmActionAutomation(
             centerX = freshButton.centerX,
             centerY = freshButton.centerY,
         )
-        check(oneClickGuard.beforeTap(guardTarget)) {
-            "本轮一键务农已越过发送边界，禁止重复点击"
+        val permitted = if (maturityHarvest) {
+            oneClickGuard.beforeMaturityHarvest(guardTarget)
+        } else {
+            oneClickGuard.beforeTap(guardTarget)
+        }
+        check(permitted) {
+            if (maturityHarvest) "本轮同场收获已越过发送边界，禁止重复点击"
+            else "本轮一键务农已越过发送边界，禁止重复点击"
         }
         runtime.tap(freshButton.centerX, freshButton.centerY)
         val firstWaterAt = now()
@@ -86,25 +186,22 @@ class FarmActionAutomation(
         // Keep the durable action in SENT state until a fresh post-tap screen
         // proves either a harvest modal or a stable farm page. A crash in this
         // window must never cause the one-click action to be sent again.
-        oneClickGuard.afterTapAccepted(firstWaterAt)
+        if (maturityHarvest) {
+            oneClickGuard.afterMaturityHarvestAccepted(firstWaterAt)
+        } else {
+            oneClickGuard.afterTapAccepted(firstWaterAt)
+        }
+        return firstWaterAt to harvestInfo
+    }
 
+    private suspend fun moveToFarmlandAndRead(profile: FarmMovementProfile): FarmlandState {
         transition(AutomationState.MOVING_TO_FARMLAND, "从雕像移动到土地")
         operation(describe(profile.statueToFarmland))
         runtime.swipe(profile.statueToFarmland)
         awaitActionStability("移动到土地后")
 
         transition(AutomationState.VERIFYING_FARMLAND, "确认已到达土地")
-        val farmlandState = requireFarmlandReading()
-
-        if (farmlandState is FarmlandState.Planted || farmlandState is FarmlandState.Mature) {
-            transition(AutomationState.READING_MATURITY, "已到达土地，成熟信息已确认")
-        }
-        return FarmActionResult(
-            harvested = harvestInfo.detected,
-            harvestInfo = harvestInfo.info,
-            farmlandState = farmlandState,
-            firstWaterAt = firstWaterAt,
-        )
+        return requireFarmlandReading()
     }
 
     private suspend fun requireFarmReady(): HarvestUiObservation {
@@ -350,6 +447,9 @@ class FarmActionAutomation(
     }
 
     private suspend fun closeHarvestPopup(initial: HarvestFrame): HarvestOutcome {
+        // The modal is direct proof of a new crop batch. Preserve that fact
+        // before any dismissal, so a later OCR failure cannot lose it.
+        oneClickGuard.onHarvestObserved()
         val startedAtNanos = monotonicNanos()
         operation(
             if (initial.kind == HarvestPopupKind.COMPLETE) {
@@ -618,6 +718,13 @@ class FarmActionAutomation(
      * additionally need the same day/hour/minute on both frames.
      */
     private fun resolveKnownFarmlandConsensus(readings: List<FarmlandState>): FarmlandState? {
+        // During these observations a running countdown can turn mature.
+        // Fresh mature evidence supersedes older planted frames, including
+        // a 2-vs-2 tie at that exact boundary.
+        val latest = readings.takeLast(FARMLAND_OCR_QUORUM)
+        if (latest.size == FARMLAND_OCR_QUORUM && latest.all { it is FarmlandState.Mature }) {
+            return latest.last()
+        }
         val categoryGroups = readings
             .filterNot { it is FarmlandState.Unknown }
             .groupBy(::category)
@@ -631,6 +738,7 @@ class FarmActionAutomation(
         val categoryWinner = categoryWinners.single()
         return when (val first = categoryWinner.first()) {
             is FarmlandState.Planted -> {
+                if (readings.last() !is FarmlandState.Planted) return null
                 val timeGroups = categoryWinner
                     .filterIsInstance<FarmlandState.Planted>()
                     .groupBy { with(it.maturity) { "$dayOffset-$hour-$minute" } }
@@ -641,7 +749,7 @@ class FarmActionAutomation(
                 val timeWinners = timeGroups.filter { it.size == largestTimeSize }
                 timeWinners.singleOrNull()?.last()
             }
-            is FarmlandState.Mature -> first
+            is FarmlandState.Mature -> null
             is FarmlandState.Empty -> first
             is FarmlandState.Unknown -> null
         }
