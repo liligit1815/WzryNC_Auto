@@ -11,6 +11,8 @@ assets/after_oneclick.png
 assets/no_oneclick.png
 assets/maturity_*.png
 diagnostics/
+runtime_state/
+assets/crop_cycle.json
 
 # IDE
 .vscode/

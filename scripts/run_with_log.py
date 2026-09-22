@@ -7,6 +7,9 @@ from pathlib import Path
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     if len(sys.argv) != 3:
         print("usage: run_with_log.py SCRIPT LOG_FILE", file=sys.stderr)
         return 2
@@ -16,7 +19,7 @@ def main():
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     process = subprocess.Popen(
-        [sys.executable, "-u", str(script)],
+        [sys.executable, "-X", "utf8", "-u", str(script)],
         stdin=None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

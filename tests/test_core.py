@@ -14,15 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class TemplateMatchingTests(unittest.TestCase):
     def test_event_popup_close_matches_in_safe_region(self):
-        template = cv2.imread(str(
+        template = wzry_auto.read_image(
             ROOT / "assets" / "templates" / "2400x1080"
             / "close_popup_event.png"
-        ))
+        )
         canvas = np.zeros((1080, 2400, 3), dtype=np.uint8)
         canvas[78:160, 2060:2142] = template
         with tempfile.TemporaryDirectory() as directory:
             screenshot = Path(directory) / "event.png"
-            cv2.imwrite(str(screenshot), canvas)
+            wzry_auto.write_image(screenshot, canvas)
             result = wzry_auto.find_template(
                 "close_popup_event.png", str(screenshot)
             )

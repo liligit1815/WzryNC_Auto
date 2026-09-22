@@ -11,6 +11,7 @@ if not errorlevel 1 (
 )
 
 :run
+set "PYTHONUTF8=1"
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found. Install Python 3.11+
@@ -27,6 +28,7 @@ if defined WZRY_ADB (
     )
 ) else (
     for /f "delims=" %%A in ('where adb 2^>nul') do if not defined WZRY_ADB set "WZRY_ADB=%%A"
+    if not defined WZRY_ADB if exist "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" set "WZRY_ADB=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"
     if not defined WZRY_ADB (
         echo [ERROR] ADB not found. Add to PATH or set WZRY_ADB
         pause
@@ -34,6 +36,7 @@ if defined WZRY_ADB (
     )
 )
 
+if not defined WZRY_VENV_DIR if exist "%CD%\.venv\Scripts\python.exe" set "WZRY_VENV_DIR=%CD%\.venv"
 if not defined WZRY_VENV_DIR set "WZRY_VENV_DIR=%CD%\venv"
 set "VENV_PYTHON=%WZRY_VENV_DIR%\Scripts\python.exe"
 
